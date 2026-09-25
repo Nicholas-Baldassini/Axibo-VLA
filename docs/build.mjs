@@ -54,9 +54,10 @@ const build = join(root, "build");
 mkdirSync(build, { recursive: true });
 writeFileSync(join(build, "index.html"), html);
 
-// Keep the encrypted page out of search engines (Cloudflare Pages reads _headers).
-mkdirSync(join(root, "site"), { recursive: true });
-writeFileSync(join(root, "site", "_headers"), "/*\n  X-Robots-Tag: noindex, nofollow\n");
+// On a build server there is no one to answer StatiCrypt's prompt, so fail fast instead of hanging.
+if (!process.env.STATICRYPT_PASSWORD && (process.env.CI || process.env.VERCEL)) {
+  throw new Error("STATICRYPT_PASSWORD is not set; add it to the project's environment variables");
+}
 
 // Encrypt build/index.html -> site/index.html. The salt lives in .staticrypt.json; commit it.
 execFileSync(

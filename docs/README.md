@@ -1,15 +1,13 @@
 # Docs
 
-The writeup is `index.md`; figures go in `images/`. On every push to `main` that touches `docs/`, the GitHub Action in `.github/workflows/docs.yml` renders the Markdown to HTML, inlines the images, encrypts the page with StatiCrypt, and uploads it to Cloudflare Pages. The Markdown and images are never served; visitors see a passphrase prompt.
+The writeup is `index.md`; figures go in `images/`. On every push, Vercel runs `npm run build` in this folder, which renders the Markdown to HTML, inlines the images, and encrypts the page with StatiCrypt into `site/`. Only `site/` is served, behind a passphrase prompt. The Markdown and images are never public.
 
-## One-time setup
+## One-time setup (Vercel)
 
-1. Create the Cloudflare Pages project (direct upload, not git-connected):
-   `npx wrangler login && npx wrangler pages project create vla-test --production-branch main`
-2. Create a Cloudflare API token with the **Cloudflare Pages: Edit** account permission, and note your account ID from the dashboard sidebar.
-3. Add three repo secrets under Settings > Secrets and variables > Actions:
-   `STATICRYPT_PASSWORD` (16+ characters; the ciphertext is public, so short ones can be brute-forced offline), `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
-4. Push. The site is at `https://vla-test.pages.dev`.
+1. Vercel dashboard > Add New > Project > import the private GitHub repo.
+2. Set **Root Directory** to `docs`. The framework, build command (`npm run build`) and output directory (`site`) come from `vercel.json`, so leave them as detected.
+3. Under Environment Variables add `STATICRYPT_PASSWORD` for Production and Preview. Use 16+ characters: the ciphertext is public, so a short passphrase can be brute-forced offline.
+4. Deploy. Every later push to the production branch redeploys; other branches get preview URLs with the same passphrase.
 
 Commit `.staticrypt.json`: it holds the salt, and changing it invalidates every visitor's "remember me".
 
