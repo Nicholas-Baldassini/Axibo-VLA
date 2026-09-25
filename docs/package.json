@@ -1,0 +1,12 @@
+{
+  "name": "vla-test-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node --env-file-if-exists=.env build.mjs"
+  },
+  "devDependencies": {
+    "marked": "^18.0.14",
+    "staticrypt": "^3.5.4"
+  }
+}

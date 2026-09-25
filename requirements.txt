@@ -1,0 +1,10 @@
+genesis-world==1.4.1
+torch==2.10.0
+torchvision==0.25.0
+numpy==2.2.6
+scipy==1.17.1
+trimesh==5.1.0
+opencv-python==5.0.0.93
+matplotlib==3.11.2
+lerobot==0.4.4
+av==15.1.0
