@@ -15,7 +15,7 @@ import copy
 import numpy as np
 
 from config import CONFIG, env_config, instruction
-from stacking_scene import build_scene, init_genesis, reset_envs, robot_dofs, save_camera_previews
+from stacking_scene import build_scene, init_genesis, reset_envs, robot_dofs
 from utils.episode import EpisodeMonitor
 from utils.ik import to_numpy
 from utils.motion import PlanRunner
@@ -30,7 +30,7 @@ def main(show_viewer=None, verbose=True, env=None, episode=0):
     n_envs = len(env_ids)
 
     init_genesis(config)
-    scene, robot, table, objects, cameras = build_scene(config, show_viewer=show_viewer, n_envs=n_envs)
+    scene, robot, table, objects, cameras = build_scene(config, show_viewer=show_viewer)
     scene.build(n_envs=n_envs, env_spacing=config["ik"]["env_spacing"])
     dofs_idx = robot_dofs(robot, config)
     ee_link = robot.get_link(config["ik"]["ee_link"])
@@ -57,12 +57,6 @@ def main(show_viewer=None, verbose=True, env=None, episode=0):
         for name, ent in objects.items():
             pos = to_numpy(ent.get_pos())
             print(f"  {name}: " + "  ".join(f"env{env_ids[k]} {np.round(pos[k], 3).tolist()}" for k in range(n_envs)))
-
-    for path in save_camera_previews(cameras, config["preview"]["dir"]):
-        print(f"saved {path}")
-    if config["preview"]["record_video"]:
-        scene.stop_recording()
-        print(f"videos written to {config['preview']['video_dir']}")
 
     return scene, robot, objects, cameras, runner, monitor
 

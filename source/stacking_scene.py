@@ -12,13 +12,10 @@ Run from anywhere:  python source/stacking_scene.py
 """
 
 import random
-from functools import partial
-from pathlib import Path
 
 import numpy as np
 import torch
 import genesis as gs
-from genesis.utils.misc import tensor_to_array
 
 from config import CONFIG, env_config
 from utils.cameras import vertical_fov
@@ -84,36 +81,9 @@ def add_cameras(scene, robot, config):
     return cameras
 
 
-def _read_env_rgb(camera, env_idx):
-    return camera.read(envs_idx=env_idx).rgb
-
-
-def add_video_recorders(scene, cameras, n_envs, config):
-    """Record <video_dir>/<camera>_env<i>.mp4 for every camera and env while the sim steps.
-
-    Must be called before scene.build(). Recording starts on build; call scene.stop_recording()
-    when done so the files are flushed.
-    """
-    out_dir = Path(config["preview"]["video_dir"])
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for name, cam in cameras.items():
-        for i in range(n_envs):
-            scene.add_recorder(
-                data_func=partial(_read_env_rgb, cam, i),
-                rec_options=gs.recorders.VideoFile(
-                    filename=str(out_dir / f"{name}_env{i}.mp4"),
-                    hz=config["preview"]["video_hz"],
-                ),
-            )
-    return out_dir
-
-
-def build_scene(config, show_viewer=True, n_envs=None):
-    """Create the scene and add every entity and camera. Call scene.build(n_envs=...) afterwards,
-    with the same n_envs given here (default ik.n_envs); it sizes the preview video recorders."""
+def build_scene(config, show_viewer=True):
+    """Create the scene and add every entity and camera. Call scene.build(n_envs=...) afterwards."""
     viewer = config["viewer"]
-    if n_envs is None:
-        n_envs = config["ik"]["n_envs"]
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(dt=config["sim"]["dt"]),
         viewer_options=gs.options.ViewerOptions(
@@ -153,9 +123,6 @@ def build_scene(config, show_viewer=True, n_envs=None):
     )
 
     cameras = add_cameras(scene, robot, config)
-    if config["preview"]["record_video"]:
-        add_video_recorders(scene, cameras, n_envs, config)
-
     return scene, robot, table, objects, cameras
 
 
@@ -210,28 +177,8 @@ def reset_envs(robot, objects, env_configs):
     return dofs_idx
 
 
-# -------------------------------- previews --------------------------------
-
-def save_camera_previews(cameras, out_dir):
-    """Write one PNG per camera with every env's frame side by side. Returns the file paths."""
-    import matplotlib.pyplot as plt
-
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for name, cam in cameras.items():
-        rgb = tensor_to_array(cam.read().rgb)
-        if rgb.ndim == 3:                     # unbatched scene: add the env axis
-            rgb = rgb[None]
-        sheet = np.concatenate(list(rgb), axis=1)
-        path = out_dir / f"{name}.png"
-        plt.imsave(path, sheet)
-        paths.append(path)
-    return paths
-
-
 def main(show_viewer=None):
-    """show_viewer overrides config["viewer"]["show"] when given."""
+    """Build the scene with every env at its start state and let it run. show_viewer overrides config["viewer"]["show"]."""
     config = CONFIG
     n_envs = config["ik"]["n_envs"]
     if show_viewer is None:
@@ -243,18 +190,8 @@ def main(show_viewer=None):
 
     env_configs = make_env_configs(config, n_envs)
     dofs_idx = apply_env_configs(robot, objects, env_configs)
-
-    for _ in range(50):
+    for _ in range(config["sim"]["n_steps"]):
         scene.step()
-    for path in save_camera_previews(cameras, config["preview"]["dir"]):
-        print(f"saved {path}")
-
-    for _ in range(config["sim"]["n_steps"] - 50):
-        scene.step()
-
-    if config["preview"]["record_video"]:
-        scene.stop_recording()
-        print(f"videos written to {config['preview']['video_dir']}")
 
     return scene, robot, table, objects, cameras, dofs_idx
 

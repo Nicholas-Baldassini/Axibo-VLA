@@ -83,7 +83,6 @@ def run_rounds(config, session, env_offset=0, show_viewer=False, verbose=True, t
 def worker_main(worker, session_dir, verbose):
     """One recorder process of a multi-worker session: run its rounds, then hand results to the parent."""
     config = copy.deepcopy(CONFIG)
-    config["preview"]["record_video"] = False
     session = Session(config, project_version(), SOURCE_DIR, existing=session_dir)
     env_offset = worker * config["ik"]["n_envs"]
     attempts, counts = run_rounds(config, session, env_offset, show_viewer=False, verbose=verbose, tag=f"[w{worker}] ")
@@ -95,7 +94,6 @@ def worker_main(worker, session_dir, verbose):
 def main(show_viewer=None, verbose=True):
     """show_viewer overrides config["viewer"]["show"] when given."""
     config = copy.deepcopy(CONFIG)
-    config["preview"]["record_video"] = False        # the dataset's videos replace the preview recorders
     if show_viewer is None:
         show_viewer = config["viewer"]["show"]
     workers = config["record"].get("workers", 1)

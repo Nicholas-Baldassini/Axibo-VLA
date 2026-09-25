@@ -8,3 +8,10 @@ opencv-python==5.0.0.93
 matplotlib==3.11.2
 lerobot==0.4.4
 av==15.1.0
+# VLA fine-tuning (train/): the versions the OpenVLA checkpoint's model code was written against
+transformers==4.40.1
+tokenizers==0.19.1
+timm==0.9.10
+peft==0.11.1
+sentencepiece==0.2.2
+# bitsandbytes is only needed for model.load_in_4bit and only builds on Linux + CUDA

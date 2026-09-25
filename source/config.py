@@ -24,7 +24,6 @@ import numpy as np
 from utils.motion import home, idle, ik, gripper, pick_and_place, Obj, on_top, resolve_plan, grasp_quat
 
 SOURCE_DIR = Path(__file__).resolve().parent
-PREVIEW_DIR = SOURCE_DIR.parent / "previews"
 
 # The one random seed. Seeds Genesis, numpy, torch and python's random at init, and every
 # per-episode draw in env_config derives from it together with the env and episode numbers.
@@ -119,13 +118,6 @@ VIEWER = {
     "camera_fov": 40,
     "world_frame_size": 0.3,       # length of the origin axes drawn in the viewer
     "draw_camera_frustums": True,  # draw each camera's frustum in the viewer
-}
-
-PREVIEW = {
-    "dir": str(PREVIEW_DIR),                         # one PNG per camera, envs side by side
-    "record_video": True,                            # one MP4 per camera per env, written while the sim steps
-    "video_dir": str(SOURCE_DIR.parent / "videos"),
-    "video_hz": 30,                                  # frames captured per second of sim time; also the video fps
 }
 
 CONTROL = {
@@ -285,7 +277,6 @@ CONFIG = {
     "scene": SCENE,
     "cameras": CAMERAS,
     "viewer": VIEWER,
-    "preview": PREVIEW,
     "control": CONTROL,
     "ik": IK,
     "sim": SIM,
