@@ -111,6 +111,7 @@ CAMERAS = {
 }
 
 VIEWER = {
+    "show": False,                  # open the interactive viewer window; False runs headless (faster)
     "res": (1280, 960),
     "camera_pos": (1.3, -1.1, TABLE_HEIGHT + 0.7),     # world frame
     "camera_lookat": (0.0, 0.0, TABLE_HEIGHT + 0.1),   # world frame
@@ -141,7 +142,7 @@ CONTROL = {
 }
 
 IK = {
-    "n_envs": 4,
+    "n_envs": 64,
     "env_spacing": (1.5, 1.5),           # viewer-only grid spacing between environments
     "ee_link": "Link6",                  # wrist link the gripper hangs off; the URDF has no tool-center link
     "tcp_offset": (0.0, 0.0, 0.1308),    # center of the finger pads in the ee_link frame, measured
@@ -166,8 +167,11 @@ TASK = {
     "destination": "blue_cube",
     "instruction": "put the {source} on the {destination}",   # object names are humanized: "red cylinder"
     # Ordered (source, destination) pairs never used for data collection. Three objects give six
-    # ordered pairs; hold one out entirely and use it as the generalization test.
-    "holdout_pairs": [("red_cube", "blue_cube")],
+    # ordered pairs; hold one out entirely and use it as the generalization test. "blue cube on red
+    # cube" is held out: cube-on-cube is the most stable placement, so a failure on it is a language
+    # grounding failure rather than a physics one, and the red cube (the only object that needs both
+    # colour and shape to identify) stays in training as a grasp target in both of its source pairs.
+    "holdout_pairs": [("blue_cube", "red_cube")],
 }
 
 # Per-episode randomization, drawn in env_config from (SEED, env, episode), so a session is
@@ -226,7 +230,7 @@ def make_plan(task, hover=0.10):
         idle(0.5),
         # lift keeps the arc apex at hover + 0.02: with the gripper vertical the arm cannot reach much
         # higher than 0.12 above the table, so a taller arc would sag through an infeasible waypoint.
-        *pick_and_place(pick=src(), place=on_top(dst, src), hover=hover, lift=0.02),
+        *pick_and_place(pick=src(), place=on_top(dst, src, clearance=0.02), hover=hover, lift=0.02),
         home(1.0),   # return home after the retreat; the success check starts when this action begins
     ]
 
@@ -235,12 +239,22 @@ def make_plan(task, hover=0.10):
 # "delta" observations are the change since the previous frame; "delta" actions are the command
 # relative to the current observation. Turn any of them off to skip it.
 RECORD = {
-    "epochs": 4,                                      # episodes per env; a session records n_envs * epochs attempts
+    "epochs": 4,                                      # episodes per env; a session records workers * n_envs * epochs attempts
+    # Recorder processes run in parallel, each simulating ik.n_envs envs and merged into one dataset
+    # at the end. Camera rendering is single-threaded per process and is the bottleneck, so on a CPU
+    # backend more envs in one process stop helping around 16, while extra processes scale nearly
+    # linearly (measured: 10.4 episodes/min alone, 9.6 each with two running). Every process costs
+    # about 2.5 GB of RAM at 16 envs.
+    "workers": 1,
     "fps": 30,                                        # frames per second of sim time; the sim runs at 1/sim.dt
     "root": str(SOURCE_DIR.parent / "datasets"),      # one session directory per recording run goes here
     "repo_id": "axibo/piper_stack",                   # LeRobot dataset name; also the session directory prefix
     "robot_type": "piper_x",
-    "vcodec": "libsvtav1",                            # dataset video codec; "h264" or "hevc_videotoolbox" also work
+    # Dataset video codec. One encoder stays live per camera per env, so the codec must be cheap per
+    # instance: h264 at 1 thread is one thread and ~20 MB each (64 envs: 195 threads, 3.6 GB), while
+    # libsvtav1 spawns ~17 threads per instance and hits macOS's 4096-thread cap around 64 envs.
+    "vcodec": "h264",
+    "encoder_threads": 1,
     "cameras": ["overhead", "front", "wrist"],        # observation.images.<name>
     "observation": {
         "joint_pos": True, "joint_pos_delta": True,   # observation.state is joint_pos, the LeRobot convention

@@ -226,9 +226,12 @@ def save_camera_previews(cameras, out_dir):
     return paths
 
 
-def main(show_viewer=True):
+def main(show_viewer=None):
+    """show_viewer overrides config["viewer"]["show"] when given."""
     config = CONFIG
     n_envs = config["ik"]["n_envs"]
+    if show_viewer is None:
+        show_viewer = config["viewer"]["show"]
 
     init_genesis(config)
     scene, robot, table, objects, cameras = build_scene(config, show_viewer=show_viewer)

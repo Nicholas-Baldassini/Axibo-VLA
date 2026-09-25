@@ -1,0 +1,2050 @@
+[
+  {
+    "epoch": 0,
+    "env": 0,
+    "task": {
+      "source": "blue_cube",
+      "destination": "red_cylinder",
+      "instruction": "put the {source} on the {destination}",
+      "holdout_pairs": [
+        [
+          "blue_cube",
+          "red_cube"
+        ]
+      ]
+    },
+    "instruction": "put the blue cube on the red cylinder",
+    "success": true,
+    "reason": "stacked",
+    "frames": 345,
+    "sim_time_s": 11.5,
+    "local_episode": 0,
+    "episode_index": 0,
+    "config": {
+      "seed": 0,
+      "scene": {
+        "table": {
+          "size": [
+            0.8,
+            1.0,
+            0.75
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.375
+          ],
+          "color": [
+            0.6,
+            0.45,
+            0.3,
+            1.0
+          ],
+          "friction": 1.0
+        },
+        "robot": {
+          "urdf": "/Users/baldini/Documents/Axibo/source/assets/piper_x/piper_x_d435.urdf",
+          "pos": [
+            -0.3,
+            0.0,
+            0.0
+          ],
+          "euler": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "objects": {
+          "red_cube": {
+            "shape": "box",
+            "size": 0.04,
+            "color": [
+              0.85,
+              0.1,
+              0.1,
+              1.0
+            ],
+            "pos": [
+              -0.09874052438486464,
+              -0.18361059042552214
+            ]
+          },
+          "red_cylinder": {
+            "shape": "cylinder",
+            "radius": 0.02,
+            "height": 0.04,
+            "color": [
+              0.85,
+              0.1,
+              0.1,
+              1.0
+            ],
+            "pos": [
+              -0.14685974924957948,
+              0.12530809568010898
+            ]
+          },
+          "blue_cube": {
+            "shape": "box",
+            "size": 0.04,
+            "color": [
+              0.1,
+              0.25,
+              0.9,
+              1.0
+            ],
+            "pos": [
+              0.023423559682767135,
+              0.042654310306871945
+            ]
+          }
+        },
+        "object_density": 1000.0,
+        "object_friction": 1.0,
+        "spawn_gap": 0.002
+      },
+      "cameras": {
+        "overhead": {
+          "res": [
+            640,
+            480
+          ],
+          "fov": 60,
+          "near": 0.01,
+          "far": 10.0,
+          "pos": [
+            0.0,
+            0.0,
+            0.85
+          ],
+          "lookat": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "up": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "front": {
+          "res": [
+            640,
+            480
+          ],
+          "fov": 60,
+          "near": 0.01,
+          "far": 10.0,
+          "pos": [
+            0.7,
+            0.0,
+            0.45
+          ],
+          "lookat": [
+            0.0,
+            0.0,
+            0.12
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "wrist": {
+          "res": [
+            640,
+            480
+          ],
+          "intrinsics": {
+            "fx": 617.0,
+            "fy": 617.0,
+            "cx": 320.0,
+            "cy": 240.0
+          },
+          "near": 0.01,
+          "far": 10.0,
+          "attach_link": "Link6",
+          "pos": [
+            0.029,
+            -0.069,
+            0.022
+          ],
+          "lookat": [
+            0.03,
+            0.03,
+            0.3
+          ],
+          "up": [
+            0.0,
+            -0.94,
+            0.34
+          ]
+        }
+      },
+      "viewer": {
+        "res": [
+          1280,
+          960
+        ],
+        "camera_pos": [
+          1.3,
+          -1.1,
+          1.45
+        ],
+        "camera_lookat": [
+          0.0,
+          0.0,
+          0.85
+        ],
+        "camera_fov": 40,
+        "world_frame_size": 0.3,
+        "draw_camera_frustums": true
+      },
+      "preview": {
+        "dir": "/Users/baldini/Documents/Axibo/previews",
+        "record_video": false,
+        "video_dir": "/Users/baldini/Documents/Axibo/videos",
+        "video_hz": 30
+      },
+      "control": {
+        "arm_joints": [
+          "joint1",
+          "joint2",
+          "joint3",
+          "joint4",
+          "joint5",
+          "joint6"
+        ],
+        "gripper_joints": [
+          "joint7",
+          "joint8"
+        ],
+        "kp": [
+          300.0,
+          300.0,
+          300.0,
+          100.0,
+          100.0,
+          100.0,
+          50.0,
+          50.0
+        ],
+        "kv": [
+          30.0,
+          30.0,
+          30.0,
+          10.0,
+          10.0,
+          10.0,
+          5.0,
+          5.0
+        ],
+        "force_limit": [
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          20.0,
+          20.0
+        ],
+        "home_qpos": [
+          0.0,
+          1.0,
+          -1.2,
+          0.0,
+          0.6,
+          0.0,
+          0.04,
+          -0.04
+        ],
+        "gripper_open_qpos": [
+          0.05,
+          -0.05
+        ],
+        "gripper_closed_qpos": [
+          0.0,
+          0.0
+        ]
+      },
+      "ik": {
+        "n_envs": 4,
+        "env_spacing": [
+          1.5,
+          1.5
+        ],
+        "ee_link": "Link6",
+        "tcp_offset": [
+          0.0,
+          0.0,
+          0.1308
+        ],
+        "target_pos": [
+          0.0,
+          0.0,
+          0.12
+        ],
+        "target_quat": [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "rot_mask": [
+          true,
+          true,
+          true
+        ],
+        "apply": "control",
+        "settle_steps": 300
+      },
+      "sim": {
+        "dt": 0.011111111111111112,
+        "n_steps": 2700,
+        "hold_after_plan": 1.0
+      },
+      "task": {
+        "source": "blue_cube",
+        "destination": "red_cylinder",
+        "instruction": "put the {source} on the {destination}",
+        "holdout_pairs": [
+          [
+            "blue_cube",
+            "red_cube"
+          ]
+        ]
+      },
+      "randomization": {
+        "task": {
+          "randomize": true
+        },
+        "placement": {
+          "randomize": true,
+          "area": {
+            "x": [
+              -0.15,
+              0.04
+            ],
+            "y": [
+              -0.2,
+              0.2
+            ]
+          },
+          "margin": 0.05,
+          "max_tries": 500
+        }
+      },
+      "success": {
+        "hold_time": 2.0,
+        "timeout": 5.0,
+        "stack_xy_tol": 0.015,
+        "stack_z_tol": 0.01,
+        "upright_tol_deg": 10.0,
+        "rest_z_tol": 0.005,
+        "disturb_tol": 0.01,
+        "still_pos_tol": 0.002,
+        "still_rot_tol_deg": 2.0
+      },
+      "plan": [
+        {
+          "type": "home",
+          "duration": 0.5
+        },
+        {
+          "type": "idle",
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            0.023423559682767135,
+            0.042654310306871945,
+            0.12000000000000001
+          ],
+          "duration": 1.5,
+          "via": [],
+          "path": "arc",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.02,
+          "quat": null,
+          "gripper": 1.0
+        },
+        {
+          "type": "ik",
+          "target": [
+            0.023423559682767135,
+            0.042654310306871945,
+            0.02
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "gripper",
+          "open": 0.0,
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            0.023423559682767135,
+            0.042654310306871945,
+            0.12000000000000001
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.14685974924957948,
+            0.12530809568010898,
+            0.165
+          ],
+          "duration": 2.0,
+          "via": [],
+          "path": "arc",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.02,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.14685974924957948,
+            0.12530809568010898,
+            0.065
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "gripper",
+          "open": 1.0,
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.14685974924957948,
+            0.12530809568010898,
+            0.165
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "home",
+          "duration": 1.0
+        }
+      ],
+      "record": {
+        "epochs": 1,
+        "fps": 30,
+        "root": "/Users/baldini/Documents/Axibo/datasets",
+        "repo_id": "axibo/piper_stack",
+        "robot_type": "piper_x",
+        "vcodec": "libsvtav1",
+        "cameras": [
+          "overhead",
+          "front",
+          "wrist"
+        ],
+        "observation": {
+          "joint_pos": true,
+          "joint_pos_delta": true,
+          "joint_vel": true,
+          "joint_vel_delta": true,
+          "tcp_pose": true,
+          "tcp_pose_delta": true,
+          "link_poses": true,
+          "link_poses_delta": true,
+          "objects": true
+        },
+        "action": {
+          "tcp_pose": true,
+          "tcp_pose_delta": true,
+          "joint_pos": true,
+          "joint_pos_delta": true,
+          "joint_vel": true,
+          "joint_vel_delta": true,
+          "link_poses": true,
+          "link_poses_delta": true
+        }
+      }
+    }
+  },
+  {
+    "epoch": 0,
+    "env": 1,
+    "task": {
+      "source": "red_cylinder",
+      "destination": "red_cube",
+      "instruction": "put the {source} on the {destination}",
+      "holdout_pairs": [
+        [
+          "blue_cube",
+          "red_cube"
+        ]
+      ]
+    },
+    "instruction": "put the red cylinder on the red cube",
+    "success": true,
+    "reason": "stacked",
+    "frames": 345,
+    "sim_time_s": 11.5,
+    "local_episode": 0,
+    "episode_index": 1,
+    "config": {
+      "seed": 0,
+      "scene": {
+        "table": {
+          "size": [
+            0.8,
+            1.0,
+            0.75
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.375
+          ],
+          "color": [
+            0.6,
+            0.45,
+            0.3,
+            1.0
+          ],
+          "friction": 1.0
+        },
+        "robot": {
+          "urdf": "/Users/baldini/Documents/Axibo/source/assets/piper_x/piper_x_d435.urdf",
+          "pos": [
+            -0.3,
+            0.0,
+            0.0
+          ],
+          "euler": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "objects": {
+          "red_cube": {
+            "shape": "box",
+            "size": 0.04,
+            "color": [
+              0.85,
+              0.1,
+              0.1,
+              1.0
+            ],
+            "pos": [
+              -0.044143770460816995,
+              0.12036323475678885
+            ]
+          },
+          "red_cylinder": {
+            "shape": "cylinder",
+            "radius": 0.02,
+            "height": 0.04,
+            "color": [
+              0.85,
+              0.1,
+              0.1,
+              1.0
+            ],
+            "pos": [
+              0.03173762532031434,
+              -0.17655393594025826
+            ]
+          },
+          "blue_cube": {
+            "shape": "box",
+            "size": 0.04,
+            "color": [
+              0.1,
+              0.25,
+              0.9,
+              1.0
+            ],
+            "pos": [
+              -0.14994143433214122,
+              0.09028922934446029
+            ]
+          }
+        },
+        "object_density": 1000.0,
+        "object_friction": 1.0,
+        "spawn_gap": 0.002
+      },
+      "cameras": {
+        "overhead": {
+          "res": [
+            640,
+            480
+          ],
+          "fov": 60,
+          "near": 0.01,
+          "far": 10.0,
+          "pos": [
+            0.0,
+            0.0,
+            0.85
+          ],
+          "lookat": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "up": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "front": {
+          "res": [
+            640,
+            480
+          ],
+          "fov": 60,
+          "near": 0.01,
+          "far": 10.0,
+          "pos": [
+            0.7,
+            0.0,
+            0.45
+          ],
+          "lookat": [
+            0.0,
+            0.0,
+            0.12
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "wrist": {
+          "res": [
+            640,
+            480
+          ],
+          "intrinsics": {
+            "fx": 617.0,
+            "fy": 617.0,
+            "cx": 320.0,
+            "cy": 240.0
+          },
+          "near": 0.01,
+          "far": 10.0,
+          "attach_link": "Link6",
+          "pos": [
+            0.029,
+            -0.069,
+            0.022
+          ],
+          "lookat": [
+            0.03,
+            0.03,
+            0.3
+          ],
+          "up": [
+            0.0,
+            -0.94,
+            0.34
+          ]
+        }
+      },
+      "viewer": {
+        "res": [
+          1280,
+          960
+        ],
+        "camera_pos": [
+          1.3,
+          -1.1,
+          1.45
+        ],
+        "camera_lookat": [
+          0.0,
+          0.0,
+          0.85
+        ],
+        "camera_fov": 40,
+        "world_frame_size": 0.3,
+        "draw_camera_frustums": true
+      },
+      "preview": {
+        "dir": "/Users/baldini/Documents/Axibo/previews",
+        "record_video": false,
+        "video_dir": "/Users/baldini/Documents/Axibo/videos",
+        "video_hz": 30
+      },
+      "control": {
+        "arm_joints": [
+          "joint1",
+          "joint2",
+          "joint3",
+          "joint4",
+          "joint5",
+          "joint6"
+        ],
+        "gripper_joints": [
+          "joint7",
+          "joint8"
+        ],
+        "kp": [
+          300.0,
+          300.0,
+          300.0,
+          100.0,
+          100.0,
+          100.0,
+          50.0,
+          50.0
+        ],
+        "kv": [
+          30.0,
+          30.0,
+          30.0,
+          10.0,
+          10.0,
+          10.0,
+          5.0,
+          5.0
+        ],
+        "force_limit": [
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          20.0,
+          20.0
+        ],
+        "home_qpos": [
+          0.0,
+          1.0,
+          -1.2,
+          0.0,
+          0.6,
+          0.0,
+          0.04,
+          -0.04
+        ],
+        "gripper_open_qpos": [
+          0.05,
+          -0.05
+        ],
+        "gripper_closed_qpos": [
+          0.0,
+          0.0
+        ]
+      },
+      "ik": {
+        "n_envs": 4,
+        "env_spacing": [
+          1.5,
+          1.5
+        ],
+        "ee_link": "Link6",
+        "tcp_offset": [
+          0.0,
+          0.0,
+          0.1308
+        ],
+        "target_pos": [
+          0.0,
+          0.0,
+          0.12
+        ],
+        "target_quat": [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "rot_mask": [
+          true,
+          true,
+          true
+        ],
+        "apply": "control",
+        "settle_steps": 300
+      },
+      "sim": {
+        "dt": 0.011111111111111112,
+        "n_steps": 2700,
+        "hold_after_plan": 1.0
+      },
+      "task": {
+        "source": "red_cylinder",
+        "destination": "red_cube",
+        "instruction": "put the {source} on the {destination}",
+        "holdout_pairs": [
+          [
+            "blue_cube",
+            "red_cube"
+          ]
+        ]
+      },
+      "randomization": {
+        "task": {
+          "randomize": true
+        },
+        "placement": {
+          "randomize": true,
+          "area": {
+            "x": [
+              -0.15,
+              0.04
+            ],
+            "y": [
+              -0.2,
+              0.2
+            ]
+          },
+          "margin": 0.05,
+          "max_tries": 500
+        }
+      },
+      "success": {
+        "hold_time": 2.0,
+        "timeout": 5.0,
+        "stack_xy_tol": 0.015,
+        "stack_z_tol": 0.01,
+        "upright_tol_deg": 10.0,
+        "rest_z_tol": 0.005,
+        "disturb_tol": 0.01,
+        "still_pos_tol": 0.002,
+        "still_rot_tol_deg": 2.0
+      },
+      "plan": [
+        {
+          "type": "home",
+          "duration": 0.5
+        },
+        {
+          "type": "idle",
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            0.03173762532031434,
+            -0.17655393594025826,
+            0.12000000000000001
+          ],
+          "duration": 1.5,
+          "via": [],
+          "path": "arc",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.02,
+          "quat": null,
+          "gripper": 1.0
+        },
+        {
+          "type": "ik",
+          "target": [
+            0.03173762532031434,
+            -0.17655393594025826,
+            0.02
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "gripper",
+          "open": 0.0,
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            0.03173762532031434,
+            -0.17655393594025826,
+            0.12000000000000001
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.044143770460816995,
+            0.12036323475678885,
+            0.165
+          ],
+          "duration": 2.0,
+          "via": [],
+          "path": "arc",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.02,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.044143770460816995,
+            0.12036323475678885,
+            0.065
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "gripper",
+          "open": 1.0,
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.044143770460816995,
+            0.12036323475678885,
+            0.165
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "home",
+          "duration": 1.0
+        }
+      ],
+      "record": {
+        "epochs": 1,
+        "fps": 30,
+        "root": "/Users/baldini/Documents/Axibo/datasets",
+        "repo_id": "axibo/piper_stack",
+        "robot_type": "piper_x",
+        "vcodec": "libsvtav1",
+        "cameras": [
+          "overhead",
+          "front",
+          "wrist"
+        ],
+        "observation": {
+          "joint_pos": true,
+          "joint_pos_delta": true,
+          "joint_vel": true,
+          "joint_vel_delta": true,
+          "tcp_pose": true,
+          "tcp_pose_delta": true,
+          "link_poses": true,
+          "link_poses_delta": true,
+          "objects": true
+        },
+        "action": {
+          "tcp_pose": true,
+          "tcp_pose_delta": true,
+          "joint_pos": true,
+          "joint_pos_delta": true,
+          "joint_vel": true,
+          "joint_vel_delta": true,
+          "link_poses": true,
+          "link_poses_delta": true
+        }
+      }
+    }
+  },
+  {
+    "epoch": 0,
+    "env": 2,
+    "task": {
+      "source": "blue_cube",
+      "destination": "red_cylinder",
+      "instruction": "put the {source} on the {destination}",
+      "holdout_pairs": [
+        [
+          "blue_cube",
+          "red_cube"
+        ]
+      ]
+    },
+    "instruction": "put the blue cube on the red cylinder",
+    "success": true,
+    "reason": "stacked",
+    "frames": 345,
+    "sim_time_s": 11.5,
+    "local_episode": 0,
+    "episode_index": 2,
+    "config": {
+      "seed": 0,
+      "scene": {
+        "table": {
+          "size": [
+            0.8,
+            1.0,
+            0.75
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.375
+          ],
+          "color": [
+            0.6,
+            0.45,
+            0.3,
+            1.0
+          ],
+          "friction": 1.0
+        },
+        "robot": {
+          "urdf": "/Users/baldini/Documents/Axibo/source/assets/piper_x/piper_x_d435.urdf",
+          "pos": [
+            -0.3,
+            0.0,
+            0.0
+          ],
+          "euler": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "objects": {
+          "red_cube": {
+            "shape": "box",
+            "size": 0.04,
+            "color": [
+              0.85,
+              0.1,
+              0.1,
+              1.0
+            ],
+            "pos": [
+              -0.07353681952121842,
+              0.04051568249510638
+            ]
+          },
+          "red_cylinder": {
+            "shape": "cylinder",
+            "radius": 0.02,
+            "height": 0.04,
+            "color": [
+              0.85,
+              0.1,
+              0.1,
+              1.0
+            ],
+            "pos": [
+              -0.12243095530905926,
+              -0.15387251838705104
+            ]
+          },
+          "blue_cube": {
+            "shape": "box",
+            "size": 0.04,
+            "color": [
+              0.1,
+              0.25,
+              0.9,
+              1.0
+            ],
+            "pos": [
+              -0.022091944307376286,
+              -0.17066645144491122
+            ]
+          }
+        },
+        "object_density": 1000.0,
+        "object_friction": 1.0,
+        "spawn_gap": 0.002
+      },
+      "cameras": {
+        "overhead": {
+          "res": [
+            640,
+            480
+          ],
+          "fov": 60,
+          "near": 0.01,
+          "far": 10.0,
+          "pos": [
+            0.0,
+            0.0,
+            0.85
+          ],
+          "lookat": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "up": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "front": {
+          "res": [
+            640,
+            480
+          ],
+          "fov": 60,
+          "near": 0.01,
+          "far": 10.0,
+          "pos": [
+            0.7,
+            0.0,
+            0.45
+          ],
+          "lookat": [
+            0.0,
+            0.0,
+            0.12
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "wrist": {
+          "res": [
+            640,
+            480
+          ],
+          "intrinsics": {
+            "fx": 617.0,
+            "fy": 617.0,
+            "cx": 320.0,
+            "cy": 240.0
+          },
+          "near": 0.01,
+          "far": 10.0,
+          "attach_link": "Link6",
+          "pos": [
+            0.029,
+            -0.069,
+            0.022
+          ],
+          "lookat": [
+            0.03,
+            0.03,
+            0.3
+          ],
+          "up": [
+            0.0,
+            -0.94,
+            0.34
+          ]
+        }
+      },
+      "viewer": {
+        "res": [
+          1280,
+          960
+        ],
+        "camera_pos": [
+          1.3,
+          -1.1,
+          1.45
+        ],
+        "camera_lookat": [
+          0.0,
+          0.0,
+          0.85
+        ],
+        "camera_fov": 40,
+        "world_frame_size": 0.3,
+        "draw_camera_frustums": true
+      },
+      "preview": {
+        "dir": "/Users/baldini/Documents/Axibo/previews",
+        "record_video": false,
+        "video_dir": "/Users/baldini/Documents/Axibo/videos",
+        "video_hz": 30
+      },
+      "control": {
+        "arm_joints": [
+          "joint1",
+          "joint2",
+          "joint3",
+          "joint4",
+          "joint5",
+          "joint6"
+        ],
+        "gripper_joints": [
+          "joint7",
+          "joint8"
+        ],
+        "kp": [
+          300.0,
+          300.0,
+          300.0,
+          100.0,
+          100.0,
+          100.0,
+          50.0,
+          50.0
+        ],
+        "kv": [
+          30.0,
+          30.0,
+          30.0,
+          10.0,
+          10.0,
+          10.0,
+          5.0,
+          5.0
+        ],
+        "force_limit": [
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          20.0,
+          20.0
+        ],
+        "home_qpos": [
+          0.0,
+          1.0,
+          -1.2,
+          0.0,
+          0.6,
+          0.0,
+          0.04,
+          -0.04
+        ],
+        "gripper_open_qpos": [
+          0.05,
+          -0.05
+        ],
+        "gripper_closed_qpos": [
+          0.0,
+          0.0
+        ]
+      },
+      "ik": {
+        "n_envs": 4,
+        "env_spacing": [
+          1.5,
+          1.5
+        ],
+        "ee_link": "Link6",
+        "tcp_offset": [
+          0.0,
+          0.0,
+          0.1308
+        ],
+        "target_pos": [
+          0.0,
+          0.0,
+          0.12
+        ],
+        "target_quat": [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "rot_mask": [
+          true,
+          true,
+          true
+        ],
+        "apply": "control",
+        "settle_steps": 300
+      },
+      "sim": {
+        "dt": 0.011111111111111112,
+        "n_steps": 2700,
+        "hold_after_plan": 1.0
+      },
+      "task": {
+        "source": "blue_cube",
+        "destination": "red_cylinder",
+        "instruction": "put the {source} on the {destination}",
+        "holdout_pairs": [
+          [
+            "blue_cube",
+            "red_cube"
+          ]
+        ]
+      },
+      "randomization": {
+        "task": {
+          "randomize": true
+        },
+        "placement": {
+          "randomize": true,
+          "area": {
+            "x": [
+              -0.15,
+              0.04
+            ],
+            "y": [
+              -0.2,
+              0.2
+            ]
+          },
+          "margin": 0.05,
+          "max_tries": 500
+        }
+      },
+      "success": {
+        "hold_time": 2.0,
+        "timeout": 5.0,
+        "stack_xy_tol": 0.015,
+        "stack_z_tol": 0.01,
+        "upright_tol_deg": 10.0,
+        "rest_z_tol": 0.005,
+        "disturb_tol": 0.01,
+        "still_pos_tol": 0.002,
+        "still_rot_tol_deg": 2.0
+      },
+      "plan": [
+        {
+          "type": "home",
+          "duration": 0.5
+        },
+        {
+          "type": "idle",
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.022091944307376286,
+            -0.17066645144491122,
+            0.12000000000000001
+          ],
+          "duration": 1.5,
+          "via": [],
+          "path": "arc",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.02,
+          "quat": null,
+          "gripper": 1.0
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.022091944307376286,
+            -0.17066645144491122,
+            0.02
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "gripper",
+          "open": 0.0,
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.022091944307376286,
+            -0.17066645144491122,
+            0.12000000000000001
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.12243095530905926,
+            -0.15387251838705104,
+            0.165
+          ],
+          "duration": 2.0,
+          "via": [],
+          "path": "arc",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.02,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.12243095530905926,
+            -0.15387251838705104,
+            0.065
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "gripper",
+          "open": 1.0,
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.12243095530905926,
+            -0.15387251838705104,
+            0.165
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "home",
+          "duration": 1.0
+        }
+      ],
+      "record": {
+        "epochs": 1,
+        "fps": 30,
+        "root": "/Users/baldini/Documents/Axibo/datasets",
+        "repo_id": "axibo/piper_stack",
+        "robot_type": "piper_x",
+        "vcodec": "libsvtav1",
+        "cameras": [
+          "overhead",
+          "front",
+          "wrist"
+        ],
+        "observation": {
+          "joint_pos": true,
+          "joint_pos_delta": true,
+          "joint_vel": true,
+          "joint_vel_delta": true,
+          "tcp_pose": true,
+          "tcp_pose_delta": true,
+          "link_poses": true,
+          "link_poses_delta": true,
+          "objects": true
+        },
+        "action": {
+          "tcp_pose": true,
+          "tcp_pose_delta": true,
+          "joint_pos": true,
+          "joint_pos_delta": true,
+          "joint_vel": true,
+          "joint_vel_delta": true,
+          "link_poses": true,
+          "link_poses_delta": true
+        }
+      }
+    }
+  },
+  {
+    "epoch": 0,
+    "env": 3,
+    "task": {
+      "source": "red_cylinder",
+      "destination": "red_cube",
+      "instruction": "put the {source} on the {destination}",
+      "holdout_pairs": [
+        [
+          "blue_cube",
+          "red_cube"
+        ]
+      ]
+    },
+    "instruction": "put the red cylinder on the red cube",
+    "success": true,
+    "reason": "stacked",
+    "frames": 345,
+    "sim_time_s": 11.5,
+    "local_episode": 0,
+    "episode_index": 3,
+    "config": {
+      "seed": 0,
+      "scene": {
+        "table": {
+          "size": [
+            0.8,
+            1.0,
+            0.75
+          ],
+          "pos": [
+            0.0,
+            0.0,
+            0.375
+          ],
+          "color": [
+            0.6,
+            0.45,
+            0.3,
+            1.0
+          ],
+          "friction": 1.0
+        },
+        "robot": {
+          "urdf": "/Users/baldini/Documents/Axibo/source/assets/piper_x/piper_x_d435.urdf",
+          "pos": [
+            -0.3,
+            0.0,
+            0.0
+          ],
+          "euler": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "objects": {
+          "red_cube": {
+            "shape": "box",
+            "size": 0.04,
+            "color": [
+              0.85,
+              0.1,
+              0.1,
+              1.0
+            ],
+            "pos": [
+              0.013478742987238144,
+              -0.07145007106499467
+            ]
+          },
+          "red_cylinder": {
+            "shape": "cylinder",
+            "radius": 0.02,
+            "height": 0.04,
+            "color": [
+              0.85,
+              0.1,
+              0.1,
+              1.0
+            ],
+            "pos": [
+              -0.08979382437879109,
+              -0.08034639693982132
+            ]
+          },
+          "blue_cube": {
+            "shape": "box",
+            "size": 0.04,
+            "color": [
+              0.1,
+              0.25,
+              0.9,
+              1.0
+            ],
+            "pos": [
+              -0.11869021164768156,
+              0.16330547369369836
+            ]
+          }
+        },
+        "object_density": 1000.0,
+        "object_friction": 1.0,
+        "spawn_gap": 0.002
+      },
+      "cameras": {
+        "overhead": {
+          "res": [
+            640,
+            480
+          ],
+          "fov": 60,
+          "near": 0.01,
+          "far": 10.0,
+          "pos": [
+            0.0,
+            0.0,
+            0.85
+          ],
+          "lookat": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "up": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        "front": {
+          "res": [
+            640,
+            480
+          ],
+          "fov": 60,
+          "near": 0.01,
+          "far": 10.0,
+          "pos": [
+            0.7,
+            0.0,
+            0.45
+          ],
+          "lookat": [
+            0.0,
+            0.0,
+            0.12
+          ],
+          "up": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "wrist": {
+          "res": [
+            640,
+            480
+          ],
+          "intrinsics": {
+            "fx": 617.0,
+            "fy": 617.0,
+            "cx": 320.0,
+            "cy": 240.0
+          },
+          "near": 0.01,
+          "far": 10.0,
+          "attach_link": "Link6",
+          "pos": [
+            0.029,
+            -0.069,
+            0.022
+          ],
+          "lookat": [
+            0.03,
+            0.03,
+            0.3
+          ],
+          "up": [
+            0.0,
+            -0.94,
+            0.34
+          ]
+        }
+      },
+      "viewer": {
+        "res": [
+          1280,
+          960
+        ],
+        "camera_pos": [
+          1.3,
+          -1.1,
+          1.45
+        ],
+        "camera_lookat": [
+          0.0,
+          0.0,
+          0.85
+        ],
+        "camera_fov": 40,
+        "world_frame_size": 0.3,
+        "draw_camera_frustums": true
+      },
+      "preview": {
+        "dir": "/Users/baldini/Documents/Axibo/previews",
+        "record_video": false,
+        "video_dir": "/Users/baldini/Documents/Axibo/videos",
+        "video_hz": 30
+      },
+      "control": {
+        "arm_joints": [
+          "joint1",
+          "joint2",
+          "joint3",
+          "joint4",
+          "joint5",
+          "joint6"
+        ],
+        "gripper_joints": [
+          "joint7",
+          "joint8"
+        ],
+        "kp": [
+          300.0,
+          300.0,
+          300.0,
+          100.0,
+          100.0,
+          100.0,
+          50.0,
+          50.0
+        ],
+        "kv": [
+          30.0,
+          30.0,
+          30.0,
+          10.0,
+          10.0,
+          10.0,
+          5.0,
+          5.0
+        ],
+        "force_limit": [
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          100.0,
+          20.0,
+          20.0
+        ],
+        "home_qpos": [
+          0.0,
+          1.0,
+          -1.2,
+          0.0,
+          0.6,
+          0.0,
+          0.04,
+          -0.04
+        ],
+        "gripper_open_qpos": [
+          0.05,
+          -0.05
+        ],
+        "gripper_closed_qpos": [
+          0.0,
+          0.0
+        ]
+      },
+      "ik": {
+        "n_envs": 4,
+        "env_spacing": [
+          1.5,
+          1.5
+        ],
+        "ee_link": "Link6",
+        "tcp_offset": [
+          0.0,
+          0.0,
+          0.1308
+        ],
+        "target_pos": [
+          0.0,
+          0.0,
+          0.12
+        ],
+        "target_quat": [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        "rot_mask": [
+          true,
+          true,
+          true
+        ],
+        "apply": "control",
+        "settle_steps": 300
+      },
+      "sim": {
+        "dt": 0.011111111111111112,
+        "n_steps": 2700,
+        "hold_after_plan": 1.0
+      },
+      "task": {
+        "source": "red_cylinder",
+        "destination": "red_cube",
+        "instruction": "put the {source} on the {destination}",
+        "holdout_pairs": [
+          [
+            "blue_cube",
+            "red_cube"
+          ]
+        ]
+      },
+      "randomization": {
+        "task": {
+          "randomize": true
+        },
+        "placement": {
+          "randomize": true,
+          "area": {
+            "x": [
+              -0.15,
+              0.04
+            ],
+            "y": [
+              -0.2,
+              0.2
+            ]
+          },
+          "margin": 0.05,
+          "max_tries": 500
+        }
+      },
+      "success": {
+        "hold_time": 2.0,
+        "timeout": 5.0,
+        "stack_xy_tol": 0.015,
+        "stack_z_tol": 0.01,
+        "upright_tol_deg": 10.0,
+        "rest_z_tol": 0.005,
+        "disturb_tol": 0.01,
+        "still_pos_tol": 0.002,
+        "still_rot_tol_deg": 2.0
+      },
+      "plan": [
+        {
+          "type": "home",
+          "duration": 0.5
+        },
+        {
+          "type": "idle",
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.08979382437879109,
+            -0.08034639693982132,
+            0.12000000000000001
+          ],
+          "duration": 1.5,
+          "via": [],
+          "path": "arc",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.02,
+          "quat": null,
+          "gripper": 1.0
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.08979382437879109,
+            -0.08034639693982132,
+            0.02
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "gripper",
+          "open": 0.0,
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            -0.08979382437879109,
+            -0.08034639693982132,
+            0.12000000000000001
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "ik",
+          "target": [
+            0.013478742987238144,
+            -0.07145007106499467,
+            0.165
+          ],
+          "duration": 2.0,
+          "via": [],
+          "path": "arc",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.02,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "ik",
+          "target": [
+            0.013478742987238144,
+            -0.07145007106499467,
+            0.065
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "gripper",
+          "open": 1.0,
+          "duration": 0.5
+        },
+        {
+          "type": "ik",
+          "target": [
+            0.013478742987238144,
+            -0.07145007106499467,
+            0.165
+          ],
+          "duration": 1.0,
+          "via": [],
+          "path": "line",
+          "profile": "minjerk",
+          "v_max": null,
+          "a_max": null,
+          "lift": 0.1,
+          "quat": null,
+          "gripper": null
+        },
+        {
+          "type": "home",
+          "duration": 1.0
+        }
+      ],
+      "record": {
+        "epochs": 1,
+        "fps": 30,
+        "root": "/Users/baldini/Documents/Axibo/datasets",
+        "repo_id": "axibo/piper_stack",
+        "robot_type": "piper_x",
+        "vcodec": "libsvtav1",
+        "cameras": [
+          "overhead",
+          "front",
+          "wrist"
+        ],
+        "observation": {
+          "joint_pos": true,
+          "joint_pos_delta": true,
+          "joint_vel": true,
+          "joint_vel_delta": true,
+          "tcp_pose": true,
+          "tcp_pose_delta": true,
+          "link_poses": true,
+          "link_poses_delta": true,
+          "objects": true
+        },
+        "action": {
+          "tcp_pose": true,
+          "tcp_pose_delta": true,
+          "joint_pos": true,
+          "joint_pos_delta": true,
+          "joint_vel": true,
+          "joint_vel_delta": true,
+          "link_poses": true,
+          "link_poses_delta": true
+        }
+      }
+    }
+  }
+]

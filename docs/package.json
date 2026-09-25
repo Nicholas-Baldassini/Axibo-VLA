@@ -6,7 +6,8 @@
     "node": ">=22.9"
   },
   "scripts": {
-    "build": "node --env-file-if-exists=.env build.mjs"
+    "build": "node --env-file-if-exists=.env build.mjs",
+    "dev": "node dev.mjs"
   },
   "devDependencies": {
     "marked": "^18.0.14",

@@ -47,11 +47,23 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+# Quiet the video pipeline. The SVT-AV1 encoder prints a configuration banner for every video it
+# starts (one per camera per env per episode) unless SVT_LOG is lowered before it initializes.
+os.environ.setdefault("SVT_LOG", "1")
+
+import av
 import numpy as np
 from scipy.spatial.transform import Rotation
 from genesis.utils.misc import tensor_to_array
 from lerobot.datasets.aggregate import aggregate_datasets
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+av.logging.set_level(av.logging.ERROR)       # libav notes such as "moving the moov atom", per file
+try:
+    from datasets.utils.logging import disable_progress_bar
+    disable_progress_bar()                   # the "Map: 100%" bars printed per saved episode
+except ImportError:
+    pass
 
 from utils.cameras import describe as describe_camera
 from utils.frames import table_top_z
@@ -159,24 +171,31 @@ def hardware_info():
 # --------------------------------- session ---------------------------------
 
 class Session:
-    """The directory for one recording run and its metadata files."""
+    """The directory for one recording run and its metadata files.
 
-    def __init__(self, config, project_version, source_dir):
+    Pass `existing` to attach to a session directory another process created (worker mode)."""
+
+    def __init__(self, config, project_version, source_dir, existing=None):
         rec = config["record"]
-        self.created = dt.datetime.now()
-        base = f"{rec['repo_id'].split('/')[-1]}_{self.created:%Y-%m-%d_%H-%M-%S}"
-        root = Path(rec["root"])
-        self.name = base
-        for n in range(2, 1000):            # two runs in the same second: never overwrite
-            if not (root / self.name).exists():
-                break
-            self.name = f"{base}_{n}"
-        self.dir = root / self.name
-        self.dir.mkdir(parents=True, exist_ok=False)
-        self.dataset_dir = self.dir / "dataset"
         self.project_version = project_version
         self.source_dir = Path(source_dir)
-        (self.dir / "config.json").write_text(json.dumps(to_jsonable(config), indent=2))
+        if existing is not None:
+            self.dir = Path(existing)
+            self.name = self.dir.name
+            self.created = dt.datetime.fromtimestamp(self.dir.stat().st_mtime)
+        else:
+            self.created = dt.datetime.now()
+            base = f"{rec['repo_id'].split('/')[-1]}_{self.created:%Y-%m-%d_%H-%M-%S}"
+            root = Path(rec["root"])
+            self.name = base
+            for n in range(2, 1000):            # two runs in the same second: never overwrite
+                if not (root / self.name).exists():
+                    break
+                self.name = f"{base}_{n}"
+            self.dir = root / self.name
+            self.dir.mkdir(parents=True, exist_ok=False)
+            (self.dir / "config.json").write_text(json.dumps(to_jsonable(config), indent=2))
+        self.dataset_dir = self.dir / "dataset"
 
     def write(self, config, attempts, wall_time_s):
         """attempts: list of dicts with epoch, env, task, instruction, success, reason, frames, episode_index, config."""
@@ -202,7 +221,8 @@ class Session:
             "repo_id": config["record"]["repo_id"],
             "fps": config["record"]["fps"],
             "sim_dt": config["sim"]["dt"],
-            "n_envs": config["ik"]["n_envs"],
+            "workers": config["record"].get("workers", 1),
+            "n_envs": config["ik"]["n_envs"],           # per worker
             "epochs": config["record"]["epochs"],
             "episodes_attempted": len(attempts),
             "episodes_succeeded": len(succeeded),
@@ -232,9 +252,12 @@ class Session:
 # --------------------------------- recorder ---------------------------------
 
 class Recorder:
-    """Streams observations, commands and camera frames from a PlanRunner into one dataset per env."""
+    """Streams observations, commands and camera frames from a PlanRunner into one dataset per env.
 
-    def __init__(self, robot, objects, cameras, dofs_idx, config, session):
+    env_offset makes this process's envs globally numbered (worker w of n_envs each starts at
+    w * n_envs), so per-env dataset directories from several worker processes never collide."""
+
+    def __init__(self, robot, objects, cameras, dofs_idx, config, session, env_offset=0):
         self.robot = robot
         self.objects = objects
         self.cameras = cameras
@@ -242,6 +265,7 @@ class Recorder:
         rec = config["record"]
         self.fps = rec["fps"]
         self.n = config["ik"]["n_envs"]
+        self.env_offset = env_offset
 
         steps_per_frame = (1.0 / config["sim"]["dt"]) / self.fps
         if abs(steps_per_frame - round(steps_per_frame)) > 1e-6:
@@ -268,17 +292,18 @@ class Recorder:
         self.numeric = [n for n in self.features if not n.startswith("observation.images.") and n != "success"]
         self.lookahead = [n for n in ("action.link_poses", "action.link_poses_delta") if n in self.features]
 
-        # One writer per env, each streaming its videos as frames arrive; merged at finalize().
+        # One writer per env, each streaming its videos as frames arrive; merged by merge_session().
         self.session = session
         self.repo_id = rec["repo_id"]
-        self.env_dirs = [session.dir / f"dataset_env{i}" for i in range(self.n)]
+        self.global_envs = [env_offset + i for i in range(self.n)]
+        self.env_dirs = [env_dataset_dir(session.dir, g) for g in self.global_envs]
         self.datasets = [
             LeRobotDataset.create(
-                f"{self.repo_id}_env{i}", fps=self.fps, features=self.features, root=self.env_dirs[i],
-                robot_type=rec.get("robot_type", "piper_x"), use_videos=True, vcodec=rec.get("vcodec", "libsvtav1"),
-                streaming_encoding=True,
+                f"{self.repo_id}_env{g}", fps=self.fps, features=self.features, root=d,
+                robot_type=rec.get("robot_type", "piper_x"), use_videos=True, vcodec=rec.get("vcodec", "h264"),
+                streaming_encoding=True, encoder_threads=rec.get("encoder_threads", 1),
             )
-            for i in range(self.n)
+            for g, d in zip(self.global_envs, self.env_dirs)
         ]
         self.local_episodes = [0] * self.n     # episodes saved so far per env
         self.runner = None
@@ -365,25 +390,15 @@ class Recorder:
         self.datasets[i].clear_episode_buffer()
         return None
 
-    def finalize(self):
-        """Flush every env's writer, merge them into the session dataset, and remove the per-env copies.
-        Returns {env: offset} such that final episode index = offset + env-local index."""
+    def close(self):
+        """Flush every env's writer. Returns {global env: episodes saved} for merge_session()."""
         for ds in self.datasets:
             ds.finalize()
-        with_episodes = [i for i in range(self.n) if self.local_episodes[i] > 0]
-        offsets = {}
-        if with_episodes:
-            aggregate_datasets(
-                [f"{self.repo_id}_env{i}" for i in with_episodes], self.repo_id,
-                roots=[self.env_dirs[i] for i in with_episodes], aggr_root=self.session.dataset_dir,
-            )
-            total = 0
-            for i in with_episodes:
-                offsets[i] = total
-                total += self.local_episodes[i]
-        for d in self.env_dirs:
-            shutil.rmtree(d, ignore_errors=True)
-        return offsets
+        return {g: n for g, n in zip(self.global_envs, self.local_episodes)}
+
+    def finalize(self):
+        """close() then merge into the session dataset (single-process convenience)."""
+        return merge_session(self.session, self.repo_id, self.close())
 
     # ---- capture ----
 
@@ -471,3 +486,29 @@ class Recorder:
         self.prev = o
         self.prev_target_q = tq.copy()
         self.prev_quat_cmd = quat_cmd.copy()
+
+
+# --------------------------------- merging ---------------------------------
+
+def env_dataset_dir(session_dir, global_env):
+    return Path(session_dir) / f"dataset_env{global_env}"
+
+
+def merge_session(session, repo_id, episode_counts):
+    """Aggregate the per-env datasets of a session into session.dataset_dir and remove them.
+    episode_counts: {global env: episodes saved}. Returns {global env: offset} such that the final
+    episode index = offset + env-local index; envs are concatenated in ascending global order."""
+    envs = sorted(g for g, n in episode_counts.items() if n > 0)
+    offsets = {}
+    if envs:
+        aggregate_datasets(
+            [f"{repo_id}_env{g}" for g in envs], repo_id,
+            roots=[env_dataset_dir(session.dir, g) for g in envs], aggr_root=session.dataset_dir,
+        )
+        total = 0
+        for g in envs:
+            offsets[g] = total
+            total += episode_counts[g]
+    for g in episode_counts:
+        shutil.rmtree(env_dataset_dir(session.dir, g), ignore_errors=True)
+    return offsets

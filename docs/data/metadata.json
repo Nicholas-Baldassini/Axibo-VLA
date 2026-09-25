@@ -1,0 +1,233 @@
+{
+  "session": "piper_stack_2026-09-24_23-34-15",
+  "created_at": "2026-09-24T23:34:15",
+  "project_version": "0.1.0",
+  "seed": 0,
+  "hardware": {
+    "cpu": "Apple M3 Pro",
+    "cores": 12,
+    "ram_gb": 19.3,
+    "gpu": "Apple GPU (Metal)",
+    "genesis_backend": "cpu",
+    "machine": "arm64",
+    "os": "macOS-26.3-arm64-arm-64bit",
+    "hostname": "Nicholass-MacBook-Pro.local"
+  },
+  "dataset_format": "lerobot_v3",
+  "repo_id": "axibo/piper_stack",
+  "fps": 30,
+  "sim_dt": 0.011111111111111112,
+  "n_envs": 4,
+  "epochs": 1,
+  "episodes_attempted": 4,
+  "episodes_succeeded": 4,
+  "episodes_failed": 0,
+  "failure_reasons": {},
+  "success_rate": 1.0,
+  "frames": 1380,
+  "instructions": {
+    "put the blue cube on the red cylinder": 2,
+    "put the red cylinder on the red cube": 2
+  },
+  "holdout_pairs": [
+    [
+      "blue_cube",
+      "red_cube"
+    ]
+  ],
+  "success_criteria": {
+    "hold_time": 2.0,
+    "timeout": 5.0,
+    "stack_xy_tol": 0.015,
+    "stack_z_tol": 0.01,
+    "upright_tol_deg": 10.0,
+    "rest_z_tol": 0.005,
+    "disturb_tol": 0.01,
+    "still_pos_tol": 0.002,
+    "still_rot_tol_deg": 2.0
+  },
+  "randomization": {
+    "task": {
+      "randomize": true
+    },
+    "placement": {
+      "randomize": true,
+      "area": {
+        "x": [
+          -0.15,
+          0.04
+        ],
+        "y": [
+          -0.2,
+          0.2
+        ]
+      },
+      "margin": 0.05,
+      "max_tries": 500
+    }
+  },
+  "cameras": {
+    "overhead": {
+      "res": [
+        640,
+        480
+      ],
+      "model": "pinhole",
+      "intrinsics": {
+        "fx": 415.6921938165307,
+        "fy": 415.6921938165307,
+        "cx": 320.0,
+        "cy": 240.0
+      },
+      "K": [
+        [
+          415.6921938165307,
+          0.0,
+          320.0
+        ],
+        [
+          0.0,
+          415.6921938165307,
+          240.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "fov_vertical_deg": 60.0,
+      "fov_horizontal_deg": 75.17817893794988,
+      "near": 0.01,
+      "far": 10.0,
+      "attach_link": null,
+      "frame": "table",
+      "pos": [
+        0.0,
+        0.0,
+        0.85
+      ],
+      "lookat": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "up": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    "front": {
+      "res": [
+        640,
+        480
+      ],
+      "model": "pinhole",
+      "intrinsics": {
+        "fx": 415.6921938165307,
+        "fy": 415.6921938165307,
+        "cx": 320.0,
+        "cy": 240.0
+      },
+      "K": [
+        [
+          415.6921938165307,
+          0.0,
+          320.0
+        ],
+        [
+          0.0,
+          415.6921938165307,
+          240.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "fov_vertical_deg": 60.0,
+      "fov_horizontal_deg": 75.17817893794988,
+      "near": 0.01,
+      "far": 10.0,
+      "attach_link": null,
+      "frame": "table",
+      "pos": [
+        0.7,
+        0.0,
+        0.45
+      ],
+      "lookat": [
+        0.0,
+        0.0,
+        0.12
+      ],
+      "up": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "wrist": {
+      "res": [
+        640,
+        480
+      ],
+      "model": "pinhole",
+      "intrinsics": {
+        "fx": 617.0,
+        "fy": 617.0,
+        "cx": 320.0,
+        "cy": 240.0
+      },
+      "K": [
+        [
+          617.0,
+          0.0,
+          320.0
+        ],
+        [
+          0.0,
+          617.0,
+          240.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "fov_vertical_deg": 42.509973282277784,
+      "fov_horizontal_deg": 54.825992595555846,
+      "near": 0.01,
+      "far": 10.0,
+      "attach_link": "Link6",
+      "frame": "link",
+      "pos": [
+        0.029,
+        -0.069,
+        0.022
+      ],
+      "lookat": [
+        0.03,
+        0.03,
+        0.3
+      ],
+      "up": [
+        0.0,
+        -0.94,
+        0.34
+      ]
+    }
+  },
+  "wall_time_s": 54.7,
+  "versions": {
+    "python": "3.11.16",
+    "genesis": "1.4.1",
+    "lerobot": "0.4.4",
+    "torch": "2.10.0",
+    "numpy": "2.2.6"
+  },
+  "platform": "macOS-26.3-arm64-arm-64bit"
+}

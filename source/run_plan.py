@@ -13,9 +13,12 @@ from utils.ik import to_numpy
 from utils.motion import PlanRunner
 
 
-def main(show_viewer=True, verbose=True):
+def main(show_viewer=None, verbose=True):
+    """show_viewer overrides config["viewer"]["show"] when given."""
     config = CONFIG
     n_envs = config["ik"]["n_envs"]
+    if show_viewer is None:
+        show_viewer = config["viewer"]["show"]
 
     init_genesis(config)
     scene, robot, table, objects, cameras = build_scene(config, show_viewer=show_viewer)
