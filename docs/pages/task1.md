@@ -77,6 +77,8 @@ The task description in plain text, 'put the {source} on the {destination}' is a
 
 Every object's is randomly placed on the table with 5cm buffer between objects. Object rotation kept constant.
 
+(ADD IN SECTION ON DOMAIN RANDOMIZATION)
+
 The monitor starts judging when the arm has retreated, and applies these tolerances every step:
 
 | Criterion | Tolerance |
