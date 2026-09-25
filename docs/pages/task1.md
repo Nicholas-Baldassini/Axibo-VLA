@@ -18,7 +18,7 @@ python source/record.py
 It runs `record.epochs` rounds. In every round each of the `n_envs` parallel environments gets its own config from `env_config(config, env, episode)`, which assigns the task pair round robin and draws every object's position and yaw from the session seed together with the env and episode numbers. The plan for that task is generated from object-relative targets, `pick_and_place(pick=Obj(source)(), place=on_top(destination, source))`, with the gripper turned to close across the picked object's faces, and resolved against the drawn layout as the last step.
 
 **Dataset.** <mark>[[link](https://huggingface.co/datasets/Baldinator/vlaPickandPlaceDataset)]</mark>
-Please request access, it is a private dataset. 
+Please request access, it is a private dataset. (Full dataset not yet uploaded)
 
 ## Held-out pair
 
@@ -26,7 +26,7 @@ I chose the held out pair to be **put the blue cube on the red cube**. because i
 
 - **Cube on cube is the most stable placement.** Cube on cube seems the most stable placement. So it should be the easiest task for a policy to complete, if it happens to perform worse on the held out task. 
 
-I considered also that blue is a single colour and cylinder is a single shape. red cube is the only object that is not identified by a single descriptive i.e red nore cube is unique. 
+I considered also that blue is a single colour and cylinder is a single shape. red cube is the only object that is not identified by a single descriptive i.e red nor cube is unique. 
 
 ## Observations
 
@@ -48,7 +48,7 @@ Every quantity below is recorded at 30 Hz, the physics runs at 90 Hz. All vector
 | `observation.objects` | 21 | SE3 of each object |
 | `success` | 1 | always 1.0, since only successful attempts are written |
 
-I decided to record more than just the images because I might as well, it is free. If I ever wanted to train something state based in the future, we have the data already saved, no need to recollect. A lot of the data can also be computed after the fact (FK for example) but it is nice to have here. 
+I decided to record more than just the images because I might as well, it is free. If I ever wanted to train something state based in the future, we have the data already saved, no need to recollect. A lot of the data can also be computed after the fact (FK for example) but it is nice to have here. Likewise, we can choose which camera angle, or all of them, when training without recollecting. 
 
 So during training, just choose a subset here to train. Also sometimes you can combine the state of a system with the image input, joint readings on a real robot is normally free as well. 
 
@@ -60,7 +60,7 @@ The same logic for actions, collect more than necessary because its free why not
 
 | Key | Dims | What it is |
 |---|---|---|
-| `action` | 8 | tool pose |
+| `action` | 8 | tool pose & gripper |
 | `action.tcp_pose_delta` | 7 | tool pose delta |
 | `action.joint_pos` | 8 | joints |
 | `action.joint_pos_delta` | 8 | joint delta |
@@ -70,6 +70,8 @@ The same logic for actions, collect more than necessary because its free why not
 | `action.link_poses_delta` | 54 | deltas |
 
 `action` if desired, can transform coordinate frame to be in robot coordinates, but for now saved in world frame. 
+
+The task description in plain text, 'put the {source} on the {destination}' is also saved per episode. 
 
 ## Randomization and episode success
 
