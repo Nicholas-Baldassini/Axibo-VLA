@@ -287,10 +287,12 @@
         <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1"/>
       </material>
     </visual>
+    <!-- Collision uses the other finger's mesh mirrored (180 deg about z): J8.dae carries two stray
+         one-triangle fragments up to 24 cm from the finger, which would inflate its convex hull. -->
     <collision>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <origin rpy="0 0 3.14159265358979" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/J8.dae"/>
+        <mesh filename="meshes/J7.dae"/>
       </geometry>
     </collision>
   </link>

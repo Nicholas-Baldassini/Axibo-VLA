@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from utils.motion import home, idle, ik, gripper, pick_and_place, Obj, on_top, resolve_plan
+from utils.motion import home, idle, ik, gripper, pick_and_place, Obj, on_top, resolve_plan, grasp_quat
 
 SOURCE_DIR = Path(__file__).resolve().parent
 PREVIEW_DIR = SOURCE_DIR.parent / "previews"
@@ -51,11 +51,12 @@ SCENE = {
         "pos": (-0.3, 0.0, 0.0),
         "euler": (0.0, 0.0, 0.0),              # degrees, scipy extrinsic x-y-z
     },
-    # The three task objects. "pos" is (x, y) on the table surface; each rests on it.
+    # The three task objects. "pos" is (x, y) on the table surface; each rests on it. "yaw" is the
+    # rotation about z in degrees. Both are redrawn per episode by env_config.
     "objects": {
-        "red_cube":     {"shape": "box",      "size": 0.04,                   "color": RED,  "pos": (0.0, -0.12)},
-        "red_cylinder": {"shape": "cylinder", "radius": 0.02, "height": 0.04, "color": RED,  "pos": (0.0,  0.00)},
-        "blue_cube":    {"shape": "box",      "size": 0.04,                   "color": BLUE, "pos": (0.0,  0.12)},
+        "red_cube":     {"shape": "box",      "size": 0.04,                   "color": RED,  "pos": (0.0, -0.12), "yaw": 0.0},
+        "red_cylinder": {"shape": "cylinder", "radius": 0.02, "height": 0.04, "color": RED,  "pos": (0.0,  0.00), "yaw": 0.0},
+        "blue_cube":    {"shape": "box",      "size": 0.04,                   "color": BLUE, "pos": (0.0,  0.12), "yaw": 0.0},
     },
     "object_density": 1000.0,  # kg/m^3, a 4 cm cube weighs 64 g
     "object_friction": 1.0,
@@ -142,7 +143,7 @@ CONTROL = {
 }
 
 IK = {
-    "n_envs": 64,
+    "n_envs": 4,
     "env_spacing": (1.5, 1.5),           # viewer-only grid spacing between environments
     "ee_link": "Link6",                  # wrist link the gripper hangs off; the URDF has no tool-center link
     "tcp_offset": (0.0, 0.0, 0.1308),    # center of the finger pads in the ee_link frame, measured
@@ -178,7 +179,12 @@ TASK = {
 # reproducible and every env and epoch differs.
 RANDOMIZATION = {
     "task": {
-        "randomize": True,            # pick a random allowed (source, destination) pair each episode
+        "randomize": True,            # assign the allowed (source, destination) pairs round-robin by global
+                                      # episode number, so attempts are balanced exactly across envs, workers and epochs
+    },
+    "orientation": {
+        "randomize": True,            # random yaw per object each episode; the grasp turns to match the picked object
+        "yaw_range": (-180.0, 180.0), # degrees
     },
     "placement": {
         "randomize": True,            # random object positions on the table each episode
@@ -217,20 +223,23 @@ def instruction(task):
     )
 
 
-def make_plan(task, hover=0.10):
-    """Motion plan for `task`, executed in order by run_plan.py and record.py.
+def make_plan(task, scene, hover=0.10):
+    """Motion plan for `task` on the object layout in `scene`, executed in order by run_plan.py and record.py.
 
     Targets are object references, resolved to table coords per env by env_config as its last
-    step, after any randomization. ik(Obj(name)()) centers the gripper on that object. See
-    utils/motion.py for the ik options (path shape, timing profile, via points, orientation).
+    step, after any randomization. ik(Obj(name)()) centers the gripper on that object. The gripper
+    orientation is IK["target_quat"] (pointing down) turned about z to close across the picked
+    object's faces given its yaw, and is held for the whole pick-and-place so the wrist never
+    twists mid-carry. See utils/motion.py for the ik options (path shape, timing profile, via points).
     """
     src, dst = Obj(task["source"]), Obj(task["destination"])
+    quat = grasp_quat(scene["objects"][task["source"]], IK["target_quat"])
     return [
         home(0.5),
         idle(0.5),
         # lift keeps the arc apex at hover + 0.02: with the gripper vertical the arm cannot reach much
         # higher than 0.12 above the table, so a taller arc would sag through an infeasible waypoint.
-        *pick_and_place(pick=src(), place=on_top(dst, src, clearance=0.02), hover=hover, lift=0.02),
+        *pick_and_place(pick=src(), place=on_top(dst, src, clearance=0.02), hover=hover, lift=0.02, quat=quat),
         home(1.0),   # return home after the retreat; the success check starts when this action begins
     ]
 
@@ -239,7 +248,7 @@ def make_plan(task, hover=0.10):
 # "delta" observations are the change since the previous frame; "delta" actions are the command
 # relative to the current observation. Turn any of them off to skip it.
 RECORD = {
-    "epochs": 4,                                      # episodes per env; a session records workers * n_envs * epochs attempts
+    "epochs": 1,                                      # episodes per env; a session records workers * n_envs * epochs attempts
     # Recorder processes run in parallel, each simulating ik.n_envs envs and merged into one dataset
     # at the end. Camera rendering is single-threaded per process and is the bottleneck, so on a CPU
     # backend more envs in one process stop helping around 16, while extra processes scale nearly
@@ -283,7 +292,7 @@ CONFIG = {
     "task": TASK,
     "randomization": RANDOMIZATION,
     "success": SUCCESS,
-    "plan": make_plan(TASK),
+    "plan": make_plan(TASK, SCENE),
     "record": RECORD,
 }
 
@@ -332,13 +341,20 @@ def env_config(config, env_idx, episode_idx=0):
     rng = np.random.default_rng([cfg["seed"], env_idx, episode_idx])
 
     if rand["task"]["randomize"]:
+        # Round-robin by global attempt number: exact balance across envs, workers and epochs.
         pairs = allowed_pairs(cfg["task"], list(cfg["scene"]["objects"]))
-        cfg["task"]["source"], cfg["task"]["destination"] = pairs[rng.integers(len(pairs))]
+        total_envs = cfg["ik"]["n_envs"] * cfg["record"].get("workers", 1)
+        cfg["task"]["source"], cfg["task"]["destination"] = pairs[(episode_idx * total_envs + env_idx) % len(pairs)]
 
     if rand["placement"]["randomize"]:
         for name, xy in sample_placement(cfg["scene"], rng, rand["placement"]).items():
             cfg["scene"]["objects"][name]["pos"] = xy
 
-    # Last step: build the plan for this task and turn object references into table coords.
-    cfg["plan"] = resolve_plan(make_plan(cfg["task"]), cfg["scene"])
+    if rand["orientation"]["randomize"]:
+        lo, hi = rand["orientation"]["yaw_range"]
+        for spec in cfg["scene"]["objects"].values():
+            spec["yaw"] = float(rng.uniform(lo, hi))
+
+    # Last step: build the plan for this task and layout, and turn object references into table coords.
+    cfg["plan"] = resolve_plan(make_plan(cfg["task"], cfg["scene"]), cfg["scene"])
     return cfg

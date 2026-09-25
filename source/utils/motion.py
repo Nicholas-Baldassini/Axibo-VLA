@@ -44,8 +44,8 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 from scipy.spatial.transform import Rotation, Slerp
 
-from utils.frames import table_to_world, object_center, object_height
-from utils.ik import to_numpy, solve_ik, tcp_pos_from_link
+from utils.frames import table_to_world, object_center, object_height, grasp_yaw
+from utils.ik import to_numpy, solve_ik, tcp_pos_from_link, quat_mul, yaw_quat
 
 
 # --------------------------------- targets ---------------------------------
@@ -115,6 +115,12 @@ def resolve_plan(plan, scene):
             action["via"] = [resolve_target(p, scene) for p in action["via"]]
         out.append(action)
     return out
+
+
+def grasp_quat(spec, base_quat):
+    """Gripper orientation for grasping `spec`: `base_quat` (gripper pointing down, fingers closing
+    along x) turned about the world z axis so the fingers close across the object's faces."""
+    return tuple(float(v) for v in quat_mul(yaw_quat(grasp_yaw(spec)), np.asarray(base_quat, dtype=float)))
 
 
 def describe_target(target):

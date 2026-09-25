@@ -25,6 +25,23 @@ def quat_to_mat(q):
     ], axis=-2)
 
 
+def quat_mul(a, b):
+    """Hamilton product of (w, x, y, z) quaternions: rotation b followed by a."""
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return np.array([
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    ])
+
+
+def yaw_quat(yaw):
+    """(w, x, y, z) quaternion for a rotation of `yaw` radians about the world z axis."""
+    return np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])
+
+
 def tcp_to_link_pos(tcp_pos, tcp_quat, tcp_offset):
     """Where the wrist link must be for the TCP to sit at tcp_pos with orientation tcp_quat."""
     offset_world = quat_to_mat(tcp_quat) @ np.asarray(tcp_offset, dtype=float)

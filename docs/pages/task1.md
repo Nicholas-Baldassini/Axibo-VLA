@@ -11,11 +11,11 @@ python source/record.py
 ```
 
 ![Data Engine](images/engine.gif)
-4 envs at 30fps on my mac. 
+4 envs at 30fps on my mac pro m3. 
 
 
 
-It runs `record.epochs` rounds. In every round each of the `n_envs` parallel environments gets its own config from `env_config(config, env, episode)`, which draws a task pair and an object layout from the session seed together with the env and episode numbers, so a session is exactly reproducible and every environment differs. The plan for that task is generated from object-relative targets, `pick_and_place(pick=Obj(source)(), place=on_top(destination, source))`, and resolved against the drawn layout as the last step.
+It runs `record.epochs` rounds. In every round each of the `n_envs` parallel environments gets its own config from `env_config(config, env, episode)`, which assigns the task pair round robin and draws every object's position and yaw from the session seed together with the env and episode numbers. The plan for that task is generated from object-relative targets, `pick_and_place(pick=Obj(source)(), place=on_top(destination, source))`, with the gripper turned to close across the picked object's faces, and resolved against the drawn layout as the last step.
 
 **Dataset.** <mark>[[link](https://huggingface.co/datasets/Baldinator/vlaPickandPlaceDataset)]</mark>
 Please request access, it is a private dataset. 
@@ -26,7 +26,7 @@ I chose the held out pair to be **put the blue cube on the red cube**. because i
 
 - **Cube on cube is the most stable placement.** Cube on cube seems the most stable placement. So it should be the easiest task for a policy to complete, if it happens to perform worse on the held out task. 
 
-Pairs are drawn uniformly at random from the five allowed ones each episode. This is good asymtopically, but may cause unbalanced dataset on small sizes. Should be ok
+I considered also that blue is a single colour and cylinder is a single shape. red cube is the only object that is not identified by a single descriptive i.e red nore cube is unique. 
 
 ## Observations
 
@@ -107,6 +107,8 @@ datasets/piper_stack_<date>_<time>/
 
 ## Dataset summary
 A sanity check visualizer to review a recorded dataset. Purely for debugging. 
+This is mainly to view the non-image based data, if it will be used. 
+
 ```
 python source/visualization/dataset_summary.py datasets/<session>
 ```

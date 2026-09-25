@@ -22,7 +22,7 @@ from genesis.utils.misc import tensor_to_array
 
 from config import CONFIG, env_config
 from utils.cameras import vertical_fov
-from utils.frames import table_to_world
+from utils.frames import table_to_world, object_yaw
 
 
 # ------------------------------ coordinates ------------------------------
@@ -108,9 +108,12 @@ def add_video_recorders(scene, cameras, n_envs, config):
     return out_dir
 
 
-def build_scene(config, show_viewer=True):
-    """Create the scene and add every entity and camera. Call scene.build(n_envs=...) afterwards."""
+def build_scene(config, show_viewer=True, n_envs=None):
+    """Create the scene and add every entity and camera. Call scene.build(n_envs=...) afterwards,
+    with the same n_envs given here (default ik.n_envs); it sizes the preview video recorders."""
     viewer = config["viewer"]
+    if n_envs is None:
+        n_envs = config["ik"]["n_envs"]
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(dt=config["sim"]["dt"]),
         viewer_options=gs.options.ViewerOptions(
@@ -151,7 +154,7 @@ def build_scene(config, show_viewer=True):
 
     cameras = add_cameras(scene, robot, config)
     if config["preview"]["record_video"]:
-        add_video_recorders(scene, cameras, config["ik"]["n_envs"], config)
+        add_video_recorders(scene, cameras, n_envs, config)
 
     return scene, robot, table, objects, cameras
 
@@ -169,10 +172,12 @@ def robot_dofs(robot, config):
 
 
 def apply_env_configs(robot, objects, env_configs):
-    """Set per-environment state: object positions, robot gains and home pose. Call after scene.build()."""
+    """Set per-environment state: object poses, robot gains and home pose. Call after scene.build()."""
     for name, ent in objects.items():
-        pos = np.array([object_spawn_pos(c, c["scene"]["objects"][name]) for c in env_configs])
-        ent.set_pos(pos)
+        specs = [c["scene"]["objects"][name] for c in env_configs]
+        ent.set_pos(np.array([object_spawn_pos(c, s) for c, s in zip(env_configs, specs)]))
+        half = np.array([object_yaw(s) / 2 for s in specs])
+        ent.set_quat(np.stack([np.cos(half), np.zeros_like(half), np.zeros_like(half), np.sin(half)], axis=1))
 
     # Gains and force limits are shared by every env in Genesis, so they come from the first config.
     ctrl = env_configs[0]["control"]
@@ -195,12 +200,11 @@ def zero_velocity(entity, n_envs):
 
 
 def reset_envs(robot, objects, env_configs):
-    """Put every env back to its config's start state: objects upright at their spawn positions and
-    at rest, robot at home and at rest. Returns the robot DOF indices."""
+    """Put every env back to its config's start state: objects at their spawn poses and at rest,
+    robot at home and at rest. Returns the robot DOF indices."""
     n = len(env_configs)
     dofs_idx = apply_env_configs(robot, objects, env_configs)
     for ent in objects.values():
-        ent.set_quat(np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (n, 1)))
         zero_velocity(ent, n)
     zero_velocity(robot, n)
     return dofs_idx
