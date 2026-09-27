@@ -135,7 +135,14 @@ CONTROL = {
 }
 
 IK = {
-    "n_envs": 4,
+    # Envs simulated in parallel. On CUDA this is bounded by what the batch renderer can allocate,
+    # not by speed: Madrona takes a large fixed pool plus roughly 20 MB per env, and it aborts in
+    # makeDedicatedImage when it runs out rather than raising something catchable. Measured on an
+    # 11 GB RTX 2080 Ti already driving a display (~2.2 GB used before Genesis starts), with three
+    # 640x480 cameras: 32 envs peaks at 8.6 GB, 40 at 9.0 GB, 48 at 9.3 GB, and 64 fails outright.
+    # 40 leaves about 2.3 GB of headroom and is a multiple of the five allowed task pairs, so every
+    # epoch draws each pair the same number of times. Re-measure after changing cameras or res.
+    "n_envs": 40,
     "env_spacing": (1.5, 1.5),           # viewer-only grid spacing between environments
     "ee_link": "Link6",                  # wrist link the gripper hangs off; the URDF has no tool-center link
     "tcp_offset": (0.0, 0.0, 0.1308),    # center of the finger pads in the ee_link frame, measured
@@ -151,6 +158,17 @@ SIM = {
     "dt": 1 / 90,             # 90 Hz physics: an integer multiple of the 30 Hz recording rate
     "n_steps": 2700,          # stacking_scene.py: 30 s of sim time
     "hold_after_plan": 1.0,   # run_plan.py / record.py: seconds to keep simulating after the last plan finishes
+    # Compute backend: "auto" is Genesis's own pick (CUDA, then AMD, then Metal, then CPU), "cuda"
+    # and "cpu" force one. The backend also decides how the cameras render: on CUDA every env and
+    # camera goes through the Madrona batch renderer in a single GPU pass, anywhere else each env is
+    # rasterized on the CPU one at a time.
+    #
+    # It does not decide recording throughput. A recording run is limited by the LeRobot writer, not
+    # by the simulator, so the two backends finish a round in the same wall time (measured at 16
+    # envs, one epoch: 9.4 episodes/min on CUDA against 9.3 on CPU). What CUDA buys is headroom:
+    # rendering drops from the largest cost in the loop to about 2% of it, so envs, cameras and
+    # resolution become nearly free to raise, and the writer is then the only thing to beat.
+    "backend": "auto",
 }
 
 # The language-conditioned task: pick `source` and place it on `destination` (two different objects).
@@ -240,12 +258,24 @@ def make_plan(task, scene, hover=0.10):
 # "delta" observations are the change since the previous frame; "delta" actions are the command
 # relative to the current observation. Turn any of them off to skip it.
 RECORD = {
-    "epochs": 1,                                      # episodes per env; a session records workers * n_envs * epochs attempts
+    # Episodes per env; a session records workers * n_envs * epochs attempts. 40 envs x 15 epochs
+    # = 600 attempts, which at the ~97% success rate of this plan lands around 580 saved
+    # demonstrations. Failed attempts are discarded, so ask for a few more than you need.
+    "epochs": 17,
     # Recorder processes run in parallel, each simulating ik.n_envs envs and merged into one dataset
-    # at the end. Camera rendering is single-threaded per process and is the bottleneck, so on a CPU
-    # backend more envs in one process stop helping around 16, while extra processes scale nearly
-    # linearly (measured: 10.4 episodes/min alone, 9.6 each with two running). Every process costs
-    # about 2.5 GB of RAM at 16 envs.
+    # at the end. On a CPU backend camera rendering is single-threaded per process and is the
+    # bottleneck, so more envs in one process stop helping around 16 while extra processes scale
+    # nearly linearly (measured: 10.4 episodes/min alone, 9.6 each with two running), at about
+    # 2.5 GB of RAM per process at 16 envs.
+    #
+    # On CUDA that no longer holds. The batch renderer draws every env at once, so rendering stops
+    # being the limit (measured at 32 envs: 1.6 ms of physics and 18 ms of rendering per step, but
+    # 19 ms just to copy the frames back to host, and roughly twice that again inside the LeRobot
+    # writer encoding them). What is left is CPU-bound and per-env: the h264 encode in add_frame and
+    # the dataset finalization in save_episode together dominate a recording run. Extra workers
+    # still help, but they now compete for GPU memory instead of RAM: the batch renderer needs about
+    # 8.7 GB for 64 envs x 3 cameras at 640x480, so a single 11 GB card fits one worker at that size
+    # and needs a smaller ik.n_envs to fit more.
     "workers": 1,
     "fps": 30,                                        # frames per second of sim time; the sim runs at 1/sim.dt
     "root": str(SOURCE_DIR.parent / "datasets"),      # one session directory per recording run goes here

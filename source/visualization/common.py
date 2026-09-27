@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pyarrow as pa
 
 
 def find_session(path):
@@ -19,6 +20,29 @@ def find_session(path):
 
 def short_camera_name(key):
     return key.split("observation.images.", 1)[-1]
+
+
+def _numeric_columns(hf, keys, features):
+    """{key: (n_frames, dim) float32} for the tabular columns, read straight from Arrow.
+
+    Indexing a Hugging Face dataset by column name (hf[key]) sends the whole column through the
+    python formatter, which walks it row by row and runs the feature decoder on each one. That is
+    fine for a few thousand frames and unusable past a hundred thousand: a 233k-frame session took
+    long enough to look like a hang. The values are already contiguous float32 in the Arrow table,
+    so flatten each column once and reshape instead.
+    """
+    table = hf.data
+    out = {}
+    for key in keys:
+        column = table.column(key)
+        if hasattr(column, "combine_chunks"):
+            column = column.combine_chunks()
+        rows = len(column)
+        # A multi-dimensional feature is stored as a list column; a 1-D one is stored flat.
+        values = column.flatten() if pa.types.is_nested(column.type) else column
+        flat = np.asarray(values.to_numpy(zero_copy_only=False), dtype=np.float32)
+        out[key] = flat.reshape(rows, -1)
+    return out
 
 
 class SessionData:
@@ -40,8 +64,7 @@ class SessionData:
         self.n_episodes = self.dataset.meta.total_episodes
         self.cameras = [k for k in self.features if k.startswith("observation.images.")]
         self.numeric = [k for k, f in self.features.items() if f["dtype"] == "float32" and k != "timestamp"]
-        hf = self.dataset.hf_dataset
-        self.columns = {k: np.asarray(hf[k], dtype=np.float32) for k in self.numeric}
+        self.columns = _numeric_columns(self.dataset.hf_dataset, self.numeric, self.features)
 
     def _read_json(self, name):
         p = self.dir / name

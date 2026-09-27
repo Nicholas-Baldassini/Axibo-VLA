@@ -22,6 +22,18 @@ DATA = {
     # None picks the most recently written session under datasets/.
     "session": None,
     "episodes": None,          # episode indices to train on, None = every episode in the session
+    # Frames to keep from each episode, applied as episode[start:stop]; (None, None) keeps all.
+    # Every demonstration opens with the plan's home and idle actions, which is an unchanging image
+    # paired with a zero action. A policy that sees one frame and no proprioception cannot tell
+    # those apart from any later moment when the arm is near home, so they teach it to stand still
+    # and a rollout can settle into standing still and never start.
+    #
+    # 27 is exact for this plan, not a round number: the action at frame t reaches action.stride
+    # frames ahead, so with home(0.5) + idle(0.5) at 30 fps the delta first becomes non-zero at
+    # frame 27, in all 670 episodes. Cutting later would throw away the only frames that show the
+    # arm leaving rest, which is the behaviour the cut is meant to teach. Re-derive it if the plan's
+    # opening actions, record.fps or action.stride change.
+    "frames": (27, None),
     "video_backend": "pyav",   # frame decoder for the dataset videos ("torchcodec" needs an FFmpeg build)
     "num_workers": 4,          # DataLoader processes decoding frames in parallel; 0 decodes in the main process
 }
@@ -57,8 +69,16 @@ MODEL = {
     # Hugging Face id or local directory. python train/download.py fetches openvla/openvla-7b (15 GB) here.
     "checkpoint": str(TRAIN_DIR / "checkpoints" / "openvla-7b"),
     "device": "auto",                  # "cuda" | "mps" | "cpu" | "auto" (the first available, in that order)
-    "dtype": "auto",                   # "bfloat16" | "float32" | "auto" (bfloat16 on cuda, float32 elsewhere)
-    "load_in_4bit": False,             # QLoRA: 4-bit base weights through bitsandbytes, CUDA only. What fits a 16 GB GPU.
+    # "bfloat16" | "float16" | "float32" | "auto" (bfloat16 on cuda, float32 elsewhere).
+    # float16 on a pre-Ampere card. bfloat16 needs sm_80 for native tensor cores; below that torch
+    # still accepts it but bitsandbytes has no fused 4-bit kernel for it and falls back to
+    # dequantizing each weight before the matmul, which is both slow and memory-hungry (measured on
+    # an sm_75 RTX 2080 Ti: 5.22 ms per 4096x4096 4-bit matmul in bfloat16 against 0.71 ms in
+    # float16). The LoRA parameters stay float32, so no gradient scaler is needed.
+    "dtype": "float16",
+    # QLoRA: 4-bit base weights through bitsandbytes, CUDA only. Required below about 16 GB of VRAM:
+    # the 7B checkpoint is ~15 GB in bfloat16, so an 11 GB card runs out partway through .to(device).
+    "load_in_4bit": True,
     "gradient_checkpointing": False,   # recompute activations in the backward pass to save memory
     # Random-init miniature of the architecture (same code path, tokenizer and processor, ~30M
     # parameters) to exercise the pipeline where the 7B model cannot run. It learns nothing useful.
@@ -70,26 +90,37 @@ MODEL = {
 LORA = {
     "rank": 32,
     "alpha": 16,
-    "dropout": 0.0,
+    "dropout": 0.01,
 }
 
 OPTIM = {
-    "lr": 5e-4,                    # OpenVLA's LoRA default at batch 16; scale it down with the batch
+    # OpenVLA's LoRA default is 5e-4 at batch 16; this is that scaled down to the effective batch
+    # of 4 below. The first run left it at 5e-4 and the loss reached 0.70 before spiking at step
+    # 2320, degrading to 1.5, and going nan at 4220.
+    "lr": 1e-4,
+    # Maximum gradient norm per optimizer step. A step whose gradient is not finite is dropped
+    # rather than applied, since one of those turns the whole adapter to nan permanently.
+    "grad_clip": 1.0,
     "weight_decay": 0.0,
-    "batch_size": 16,
-    "grad_accumulation_steps": 1,  # effective batch = batch_size * grad_accumulation_steps
+    # Effective batch = batch_size * grad_accumulation_steps, and only the effective batch matters
+    # for the gradient, so trade one for the other to fit the GPU. 4-bit weights and LoRA rest at
+    # 5.7 GB, which leaves about 4 GB for activations on an 11 GB card: batch_size 4 runs out in the
+    # LoRA forward, batch_size 1 fits with room to spare. Raise batch_size and drop the
+    # accumulation on a larger card.
+    "batch_size": 1,
+    "grad_accumulation_steps": 4,
     "max_steps": 5000,             # optimizer steps
 }
 
 SAVE = {
     "root": str(TRAIN_DIR / "runs"),   # one directory per run: <config>_<date>_<time>
-    "every_steps": 500,                # LoRA adapter checkpoint every N optimizer steps, plus one at the end
+    "every_steps": 1000,                # LoRA adapter checkpoint every N optimizer steps, plus one at the end
     "merged": False,                   # also write the base model with the adapter merged in at the end
                                        # (a full copy of the checkpoint, 15 GB for the 7B; loads with from_pretrained)
 }
 
 LOG = {
-    "every_steps": 10,   # print and append to train_log.jsonl every N optimizer steps
+    "every_steps": 20,   # print and append to train_log.jsonl every N optimizer steps
 }
 
 # Rollout preview videos: run the current policy in the simulator for a few episodes at every

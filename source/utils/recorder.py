@@ -39,6 +39,7 @@ episode (no q / -q jumps); rotation deltas are rotation vectors.
 
 import datetime as dt
 import json
+import logging
 import os
 import platform
 import shutil
@@ -58,7 +59,15 @@ from genesis.utils.misc import tensor_to_array
 from lerobot.datasets.aggregate import aggregate_datasets
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
+# Quiet the third-party output that would otherwise bury the recorder's own progress over a long
+# session. set_level only filters what PyAV's own callback sees, and the encoders run on threads
+# LeRobot owns, so libx264's per-file statistics block (about a dozen lines per video, i.e. three
+# per env per episode) still reaches stderr; set_libav_level silences libav itself.
 av.logging.set_level(av.logging.ERROR)       # libav notes such as "moving the moov atom", per file
+av.logging.set_libav_level(av.logging.ERROR)  # libx264's "frame I:... Avg QP:..." dump, per file
+# lerobot and datasets install a root logging handler, which reprints every Genesis line a second
+# time as "INFO:genesis:...". Genesis already prints its own formatted output.
+logging.getLogger("genesis").propagate = False
 try:
     from datasets.utils.logging import disable_progress_bar
     disable_progress_bar()                   # the "Map: 100%" bars printed per saved episode

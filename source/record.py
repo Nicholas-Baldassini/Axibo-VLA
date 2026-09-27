@@ -34,6 +34,72 @@ def project_version():
     return path.read_text().strip() if path.exists() else "unknown"
 
 
+def _hms(seconds):
+    m, s = divmod(int(max(seconds, 0)), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+class Progress:
+    """One status line, rewritten in place, over the per-episode lines.
+
+    Only a terminal gets the live line; redirected output and multi-worker runs fall back to a
+    line per epoch, since several workers sharing one carriage return is unreadable.
+    """
+
+    def __init__(self, epochs, n_envs, enabled=True, every=0.25):
+        self.epochs, self.n_envs, self.every = epochs, n_envs, every
+        self.live = enabled and sys.stdout.isatty()
+        self.t0 = time.time()
+        self.last = 0.0
+        self.width = 0
+        self.saved = 0
+        self.steps_done = 0     # steps of finished epochs; runner.step_count restarts each epoch
+
+    def end_epoch(self, runner):
+        self.steps_done += runner.step_count
+
+    def _fraction(self, epoch, runner, monitor):
+        """How far this epoch is, averaged over envs: a terminated env is done, a running one is
+        as far as its plan has got. Capped below 1 while running so the bar cannot sit at full."""
+        total = 0.0
+        for i in range(self.n_envs):
+            if monitor.results[i].terminated:
+                total += 1.0
+            else:
+                total += 0.9 * runner.action_idx[i] / max(1, len(runner.plans[i]))
+        return total / max(1, self.n_envs)
+
+    def update(self, epoch, runner, monitor, force=False):
+        if not self.live:
+            return
+        now = time.time()
+        if not force and now - self.last < self.every:
+            return
+        self.last = now
+        frac = self._fraction(epoch, runner, monitor)
+        overall = (epoch + frac) / self.epochs
+        elapsed = now - self.t0
+        eta = elapsed * (1 - overall) / overall if overall > 1e-6 else 0
+        done = sum(r.terminated for r in monitor.results)
+        # Steps per second of one env, the same quantity Genesis called "FPS per env"; times the
+        # env count it is the total FPS Genesis reported.
+        sps = (self.steps_done + runner.step_count) / elapsed if elapsed > 0 else 0
+        bar = "#" * int(round(20 * frac)) + "." * (20 - int(round(20 * frac)))
+        line = (f"epoch {epoch + 1}/{self.epochs} [{bar}] {100 * frac:3.0f}%  "
+                f"done {done:>3}/{self.n_envs}  saved {self.saved:>4}  "
+                f"sim {runner.time:5.1f}s  {sps * self.n_envs:5.0f} FPS ({sps:4.1f}/env)  "
+                f"elapsed {_hms(elapsed)}  eta {_hms(eta)}")
+        self.width = max(self.width, len(line))
+        print("\r" + line.ljust(self.width), end="", flush=True)
+
+    def message(self, text):
+        """Print a line above the status line without leaving fragments behind."""
+        if self.live:
+            print("\r" + " " * self.width + "\r", end="")
+        print(text, flush=True)
+
+
 def run_rounds(config, session, env_offset=0, show_viewer=False, verbose=True, tag=""):
     """Simulate record.epochs rounds of ik.n_envs envs, streaming successes into per-env datasets.
     Returns (attempts, episode_counts) with envs numbered from env_offset."""
@@ -46,6 +112,9 @@ def run_rounds(config, session, env_offset=0, show_viewer=False, verbose=True, t
     dofs_idx = robot_dofs(robot, config)
     ee_link = robot.get_link(config["ik"]["ee_link"])
     recorder = Recorder(robot, objects, cameras, dofs_idx, config, session, env_offset=env_offset)
+
+    # The live line only makes sense for a single process writing to a terminal.
+    progress = Progress(epochs, n_envs, enabled=verbose and not tag)
 
     attempts = []
     for epoch in range(epochs):
@@ -65,6 +134,7 @@ def run_rounds(config, session, env_offset=0, show_viewer=False, verbose=True, t
                 if r.terminated and i not in handled:
                     handled.add(i)
                     local = recorder.end_episode(i, r.success)
+                    progress.saved += bool(r.success)
                     attempts.append({
                         "epoch": epoch, "env": env_offset + i, "task": env_configs[i]["task"], "instruction": instructions[i],
                         "success": r.success, "reason": r.reason, "frames": int(recorder.n_frames[i]),
@@ -72,11 +142,26 @@ def run_rounds(config, session, env_offset=0, show_viewer=False, verbose=True, t
                         "episode_index": None, "config": env_configs[i],
                     })
                     if verbose:
-                        status = "success" if r.success else f"FAILED ({r.reason})"
-                        print(f"{tag}epoch {epoch} env {env_offset + i}: {status:24s} {recorder.n_frames[i]:4d} frames  \"{instructions[i]}\"", flush=True)
+                        # Only failures are worth a line each; successes are counted on the status
+                        # line, and one line per success buries them over a few hundred episodes.
+                        if not r.success:
+                            progress.message(f"{tag}epoch {epoch + 1} env {env_offset + i}: FAILED ({r.reason})"
+                                             f"  \"{instructions[i]}\"")
+                        elif not progress.live:
+                            print(f"{tag}epoch {epoch + 1} env {env_offset + i}: success "
+                                  f"{recorder.n_frames[i]:4d} frames  \"{instructions[i]}\"", flush=True)
+            progress.update(epoch, runner, monitor)
+        progress.update(epoch, runner, monitor, force=True)
+        progress.end_epoch(runner)
         if verbose:
-            print(f"{tag}epoch {epoch}: {runner.time:.1f}s of sim in {time.time() - t_round:.1f}s wall", flush=True)
+            wall = time.time() - t_round
+            ok = sum(1 for a in attempts if a["epoch"] == epoch and a["success"])
+            progress.message(f"{tag}epoch {epoch + 1}/{epochs}: {ok}/{n_envs} saved, "
+                             f"{runner.time:.1f}s of sim in {wall:.1f}s wall "
+                             f"({n_envs / wall * 60:.1f} episodes/min)")
 
+    if verbose:
+        progress.message(f"{tag}finalizing videos and per-env datasets...")
     return attempts, recorder.close()
 
 

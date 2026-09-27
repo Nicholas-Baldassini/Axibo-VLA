@@ -111,9 +111,18 @@ class OpenVLASamples(Dataset):
         names = {k: self._names(k, columns[k].shape[1]) for k in keys}
         ranges = episode_ranges(np.asarray(hf["episode_index"]))
         self.actions, self.action_names, mask = build_action_table(columns, names, ranges, config["action"])
-        self.stats = action_statistics(self.actions, mask)
-        self.normalized = normalize_actions(self.actions, self.stats)
         self.n_episodes, self.fps = len(ranges), self.dataset.meta.fps
+
+        # data.frames slices every episode the same way, episode_rows[start:stop]. The action table
+        # is still built over every row first, so a frame at the edge of the slice still looks
+        # `stride` frames ahead at the right target, and the statistics are taken over what
+        # survives so the bins are not spent on frames that are never trained on.
+        start, stop = config["data"].get("frames", (None, None))
+        self.index = np.concatenate([np.arange(s, e)[start:stop] for s, e in ranges])
+        if len(self.index) == 0:
+            sys.exit(f"data.frames {(start, stop)} leaves no frames in any episode")
+        self.stats = action_statistics(self.actions[self.index], mask)
+        self.normalized = normalize_actions(self.actions, self.stats)
         self.image_shape = tuple(self.dataset.meta.features[self.image_key]["shape"])
 
     def _names(self, key, width):
@@ -133,14 +142,15 @@ class OpenVLASamples(Dataset):
             self.tokenizer = self.processor.tokenizer
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.index)
 
     def __getitem__(self, i):
         self._ensure_processor()
-        item = self.dataset[i]
+        row = int(self.index[i])
+        item = self.dataset[row]
         image = TVF.to_pil_image(item[self.image_key])
         pixel_values = self.processor.image_processor(image, return_tensors="pt")["pixel_values"][0]
-        input_ids, labels = encode_sample(self.tokenizer, self.action_tokenizer, item["task"], self.normalized[i])
+        input_ids, labels = encode_sample(self.tokenizer, self.action_tokenizer, item["task"], self.normalized[row])
         return {
             "pixel_values": pixel_values,
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
@@ -149,13 +159,14 @@ class OpenVLASamples(Dataset):
 
     def describe_sample(self, i=0):
         """A readable dump of one sample: instruction, action, normalized action, token ids."""
-        item = self.dataset[i]
-        input_ids, _ = encode_sample(self.tokenizer, self.action_tokenizer, item["task"], self.normalized[i])
+        row = int(self.index[i])
+        item = self.dataset[row]
+        input_ids, _ = encode_sample(self.tokenizer, self.action_tokenizer, item["task"], self.normalized[row])
         n = len(self.action_names)
         return "\n".join([
             f"sample {i}: \"{item['task']}\"  (episode {int(item['episode_index'])}, frame {int(item['frame_index'])})",
-            "  action     " + "  ".join(f"{name} {v:+.4f}" for name, v in zip(self.action_names, self.actions[i])),
-            "  normalized " + "  ".join(f"{v:+.3f}" for v in self.normalized[i]),
+            "  action     " + "  ".join(f"{name} {v:+.4f}" for name, v in zip(self.action_names, self.actions[row])),
+            "  normalized " + "  ".join(f"{v:+.3f}" for v in self.normalized[row]),
             f"  tokens: prompt {input_ids[:-(n + 1)]} = {self.tokenizer.decode(input_ids[:-(n + 1)])!r}",
             f"          action {input_ids[-(n + 1):-1]}  eos {input_ids[-1]}   (loss on these {n + 1})",
         ])

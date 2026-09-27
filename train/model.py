@@ -3,9 +3,12 @@ Loading OpenVLA for fine-tuning: the checkpoint's processor, the model (or a tin
 stand-in with the same architecture), and the LoRA adapter on top.
 """
 
+from contextlib import contextmanager
+
 import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
+from transformers.modeling_utils import PreTrainedModel
 
 
 def resolve_device(name):
@@ -61,6 +64,25 @@ def build_tiny(checkpoint):
     return OpenVLA(config)
 
 
+@contextmanager
+def _allow_quantized_to():
+    """Let accelerate move a 4-bit model during loading.
+
+    transformers 4.40.1, the version OpenVLA's checkpoint code targets, refuses `.to()` on a
+    bitsandbytes model. accelerate >= 1.x ends dispatch_model with `model.to(device)` whenever every
+    module lands on a single GPU, so loading in 4-bit raises before it returns. Pinning cannot
+    reconcile them: lerobot requires accelerate >= 1.10 and train/data.py needs lerobot to read the
+    dataset, so both live in one environment. device_map has already placed every weight on the
+    right device by this point, which makes that call a no-op; only the guard has to stand aside.
+    """
+    guarded = PreTrainedModel.to
+    PreTrainedModel.to = torch.nn.Module.to
+    try:
+        yield
+    finally:
+        PreTrainedModel.to = guarded
+
+
 def load_base(model_cfg, device, dtype):
     """The model to fine-tune, on `device`, before LoRA."""
     checkpoint = model_cfg["checkpoint"]
@@ -72,12 +94,15 @@ def load_base(model_cfg, device, dtype):
         from peft import prepare_model_for_kbit_training
         from transformers import BitsAndBytesConfig
 
-        model = AutoModelForVision2Seq.from_pretrained(
-            checkpoint, torch_dtype=dtype, trust_remote_code=True, low_cpu_mem_usage=True,
-            quantization_config=BitsAndBytesConfig(
-                load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_quant_type="nf4",
-            ),
-        )
+        with _allow_quantized_to():
+            model = AutoModelForVision2Seq.from_pretrained(
+                checkpoint, torch_dtype=dtype, trust_remote_code=True, low_cpu_mem_usage=True,
+                # Place every module on the one GPU up front, so nothing has to be moved later.
+                device_map={"": device.index or 0},
+                quantization_config=BitsAndBytesConfig(
+                    load_in_4bit=True, bnb_4bit_compute_dtype=dtype, bnb_4bit_quant_type="nf4",
+                ),
+            )
         model = prepare_model_for_kbit_training(model)
     else:
         model = AutoModelForVision2Seq.from_pretrained(

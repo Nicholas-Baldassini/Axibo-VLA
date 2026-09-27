@@ -62,30 +62,44 @@ def make_run_dir(save_cfg, config_name):
     return run_dir
 
 
-def action_metrics(logits, labels, n_patches, action_tokenizer):
-    """Action token accuracy and mean L1 error (normalized units) of a batch, as OpenVLA logs them.
+def action_metrics(logits, labels, n_patches, action_tokenizer, n_dims):
+    """Action token accuracy and L1 error (normalized units) of a batch, as OpenVLA logs them.
 
     The model inserts the image patches after the first text token, so the logit predicting text
     token j (j >= 1) sits at position n_patches + j - 1.
+
+    The L1 also comes back per action dimension. A single mean hides which part of the action is
+    being learned: translation, rotation and the gripper are on different scales and converge at
+    different rates, and a policy can look healthy on average while one dimension is not learned.
     """
     preds = logits[:, n_patches:-1].argmax(dim=-1)
     truth = labels[:, 1:].to(preds.device)
     mask = truth > action_tokenizer.action_token_begin_idx
     total = int(mask.sum())
     if total == 0:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), np.full(n_dims, np.nan)
     accuracy = float(((preds == truth) & mask).sum()) / total
     p = action_tokenizer.decode_token_ids_to_actions(preds[mask].cpu().numpy())
     t = action_tokenizer.decode_token_ids_to_actions(truth[mask].cpu().numpy())
-    return accuracy, float(np.abs(p - t).mean())
+    error = np.abs(p - t)
+    # Every sample contributes exactly n_dims action tokens, in order, so this reshape lines the
+    # errors up by dimension. A truncated batch would not divide evenly; report only the mean then.
+    per_dim = error.reshape(-1, n_dims).mean(axis=0) if total % n_dims == 0 else np.full(n_dims, np.nan)
+    return accuracy, float(error.mean()), per_dim
 
 
-def save_checkpoint(model, processor, stats, run_dir, name, merged=False):
+def save_checkpoint(model, processor, stats, run_dir, name, merged=False, metrics=None):
     out = run_dir / name
     adapter = out / "adapter"
     model.save_pretrained(adapter)
     processor.save_pretrained(adapter)
     (adapter / "dataset_statistics.json").write_text(json.dumps(stats, indent=1))
+    # How this checkpoint was doing when it was written. dataset_statistics.json next to it holds
+    # the action normalization, not the training metrics, so without this a checkpoint on its own
+    # says nothing about which step it is or whether it was any good, and picking the best one
+    # means going back to the run's train_log.jsonl.
+    if metrics is not None:
+        (out / "metrics.json").write_text(json.dumps(metrics, indent=1))
     if merged:
         # merge_and_unload folds the adapter into the base weights in place, so this is only done last.
         base = model.merge_and_unload()
@@ -153,8 +167,9 @@ def main(config_name):
         num_workers=config["data"]["num_workers"], persistent_workers=config["data"]["num_workers"] > 0,
         collate_fn=partial(collate, pad_token_id=tokenizer.pad_token_id),
     )
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=optim_cfg["lr"], weight_decay=optim_cfg["weight_decay"],
+        trainable_params, lr=optim_cfg["lr"], weight_decay=optim_cfg["weight_decay"],
     )
     autocast = torch.autocast("cuda", dtype=torch.bfloat16) if device.type == "cuda" and dtype == torch.bfloat16 else nullcontext()
     accumulation = optim_cfg["grad_accumulation_steps"]
@@ -167,8 +182,10 @@ def main(config_name):
 
     model.train()
     log_file = open(run_dir / "train_log.jsonl", "a")
-    window = {"loss": [], "accuracy": [], "l1": []}
+    window = {"loss": [], "accuracy": [], "l1": [], "l1_dims": [], "grad_norm": []}
     step, micro, t_start, t_log, samples = 0, 0, time.time(), time.time(), 0
+    skipped = 0     # optimizer steps dropped because the gradient was not finite
+    last_record = None    # the most recent log record, stored alongside each checkpoint
     while step < max_steps:
         for batch in loader:
             pixel_values = batch["pixel_values"].to(device, dtype=model_dtype)
@@ -179,14 +196,25 @@ def main(config_name):
             micro += 1
             samples += len(input_ids)
 
-            accuracy, l1 = action_metrics(output.logits.detach(), labels, n_patches, action_tokenizer)
+            accuracy, l1, l1_dims = action_metrics(output.logits.detach(), labels, n_patches,
+                                                   action_tokenizer, len(data.action_names))
             window["loss"].append(output.loss.item())
             window["accuracy"].append(accuracy)
             window["l1"].append(l1)
+            window["l1_dims"].append(l1_dims)
             if micro % accumulation:
                 continue
 
-            optimizer.step()
+            # The 4-bit matmuls compute in float16 and nothing scales the loss, so a single bad
+            # batch can hand back an inf or nan gradient; without this guard the optimizer writes
+            # it into the adapter and every step afterwards is nan. Clipping also keeps an ordinary
+            # loss spike from moving the adapter far enough to destabilize the run.
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, optim_cfg["grad_clip"])
+            window["grad_norm"].append(float(grad_norm))
+            if torch.isfinite(grad_norm):
+                optimizer.step()
+            else:
+                skipped += 1
             optimizer.zero_grad(set_to_none=True)
             step += 1
 
@@ -196,29 +224,43 @@ def main(config_name):
                 record = {
                     "step": step,
                     "loss": float(np.mean(window["loss"])),
+                    # The worst step in the window, not just its mean: a mean over 20 steps hides
+                    # the spike that precedes a divergence, which is how the first run's collapse
+                    # went unnoticed until the loss was already nan.
+                    "loss_max": float(np.max(window["loss"])),
                     "action_accuracy": float(np.nanmean(window["accuracy"])),
                     "action_l1": float(np.nanmean(window["l1"])),
+                    "action_l1_per_dim": dict(zip(data.action_names,
+                                                  np.nanmean(window["l1_dims"], axis=0).round(5).tolist())),
+                    # The earliest warning there is: the gradient norm climbs well before the loss
+                    # does, and its maximum is what the clip is there to catch.
+                    "grad_norm": float(np.mean(window["grad_norm"])),
+                    "grad_norm_max": float(np.max(window["grad_norm"])),
+                    "step_per_s": round(rate, 3),
                     "lr": optimizer.param_groups[0]["lr"],
                     "samples": samples,
                     "elapsed_s": round(now - t_start, 1),
+                    "skipped_steps": skipped,
                 }
+                last_record = record
                 log_file.write(json.dumps(record) + "\n")
                 log_file.flush()
                 eta = timedelta(seconds=int((max_steps - step) / max(rate, 1e-6)))
                 print(f"step {step}/{max_steps}  loss {record['loss']:.4f}  acc {record['action_accuracy']:.3f}  "
-                      f"l1 {record['action_l1']:.3f}  {rate:.2f} step/s  eta {eta}")
-                window = {"loss": [], "accuracy": [], "l1": []}
+                      f"l1 {record['action_l1']:.3f}  {rate:.2f} step/s  eta {eta}"
+                      + (f"  skipped {skipped}" if skipped else ""))
+                window = {"loss": [], "accuracy": [], "l1": [], "l1_dims": [], "grad_norm": []}
                 t_log = now
 
             if save_every and step % save_every == 0 and step < max_steps:
-                print(f"saved {save_checkpoint(model, processor, stats, run_dir, f'step_{step:06d}')}")
+                print(f"saved {save_checkpoint(model, processor, stats, run_dir, f'step_{step:06d}', metrics=last_record)}")
             if step >= max_steps:
                 break
 
     merged = save_cfg["merged"] and not model_cfg["load_in_4bit"]
     if save_cfg["merged"] and not merged:
         print("save.merged skipped: a 4-bit base model cannot be merged; load the adapter on the full checkpoint instead")
-    print(f"saved {save_checkpoint(model, processor, stats, run_dir, 'final', merged=merged)}")
+    print(f"saved {save_checkpoint(model, processor, stats, run_dir, 'final', merged=merged, metrics=last_record)}")
     log_file.close()
     print(f"done: {step} steps, {samples} samples, {timedelta(seconds=int(time.time() - t_start))}")
     return run_dir

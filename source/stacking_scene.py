@@ -33,13 +33,24 @@ def object_spawn_pos(config, spec):
 
 # ---------------------------------- init ----------------------------------
 
+def resolve_backend(name):
+    """Genesis backend for a config["sim"]["backend"] name. "auto" returns None, which lets Genesis
+    pick the best available itself: CUDA, then AMD, then Metal, then CPU."""
+    if name is None or str(name).lower() == "auto":
+        return None
+    backend = getattr(gs, str(name).lower(), None)
+    if backend is None:
+        raise ValueError(f"unknown sim.backend {name!r}; use \"auto\", \"cpu\" or \"cuda\"")
+    return backend
+
+
 def init_genesis(config, backend=None):
     """Initialize Genesis with the config seed and seed python, numpy and torch the same way."""
     seed = config["seed"]
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    gs.init(backend=backend or gs.cpu, seed=seed)
+    gs.init(backend=backend or resolve_backend(config["sim"].get("backend")), seed=seed)
 
 
 # -------------------------------- entities --------------------------------
@@ -62,22 +73,60 @@ def add_object(scene, config, name, spec):
     )
 
 
+# Lights for the batch renderer. Madrona renders a completely unlit scene, so without these every
+# batch-rendered frame comes out near-black; the viewer window and the CPU rasterizer each bring
+# their own default lighting and ignore this list, which is why the two backends do not produce
+# pixel-identical frames. The lights belong to the renderer rather than to any one camera, so
+# add_cameras registers the whole list once, on the first camera; repeating them per camera would
+# add up and blow out the exposure.
+# Intensities are tuned so the table renders at roughly the RGB the CPU rasterizer gives it, which
+# keeps datasets recorded on the two backends comparable: the table is the largest flat surface in
+# frame and the first thing to clip, and once it blows out to white it takes the object colors with
+# it (the cubes wash toward pink and pale blue rather than white, since their weak channels start
+# near zero and clip last). Brightness matches at these values; a slight residual desaturation
+# remains, which is a shading-model difference between Madrona and the rasterizer, not exposure.
+BATCH_LIGHTS = [
+    # Overhead key light, straight down on the table.
+    {"pos": (0.0, 0.0, 3.0), "dir": (0.0, 0.0, -1.0), "directional": True, "intensity": 0.30, "castshadow": True},
+    # Shadowless fill from a front corner so the sides of the objects are not solid black.
+    {"pos": (1.5, 1.5, 2.0), "dir": (-0.5, -0.5, -1.0), "directional": True, "intensity": 0.12, "castshadow": False},
+]
+
+
+def batch_rendering():
+    """Whether the cameras can go through the Madrona GPU batch renderer, which needs the CUDA
+    backend. Call only after init_genesis, since gs.backend is set by gs.init."""
+    return gs.backend == gs.cuda
+
+
 def add_cameras(scene, robot, config):
-    """One RGB camera sensor per entry in config["cameras"]. Each read() returns (n_envs, H, W, 3)."""
+    """One RGB camera sensor per entry in config["cameras"]. Each read() returns (n_envs, H, W, 3).
+
+    On CUDA every camera and env is rendered in a single GPU pass by the Madrona batch renderer;
+    on any other backend each camera is rasterized one env at a time on the CPU."""
+    batch = batch_rendering()
+    camera_options = gs.sensors.BatchRendererCameraOptions if batch else gs.sensors.RasterizerCameraOptions
+    if batch:
+        resolutions = {tuple(cam["res"]) for cam in config["cameras"].values()}
+        if len(resolutions) > 1:
+            raise ValueError(f"the batch renderer needs one shared resolution for every camera, got {sorted(resolutions)}")
+
     cameras = {}
-    for name, cam in config["cameras"].items():
+    for i, (name, cam) in enumerate(config["cameras"].items()):
         kwargs = dict(
             res=cam["res"], fov=vertical_fov(cam), up=cam["up"],
             near=cam.get("near", 0.01), far=cam.get("far", 100.0),
             draw_debug=config["viewer"]["draw_camera_frustums"],
         )
+        if batch:
+            kwargs["lights"] = BATCH_LIGHTS if i == 0 else []
         if "attach_link" in cam:
             # Attached camera: pos and lookat are in the link's frame and follow it.
             link = robot.get_link(cam["attach_link"])
             kwargs.update(entity_idx=robot.idx, link_idx_local=link.idx_local, pos=cam["pos"], lookat=cam["lookat"])
         else:
             kwargs.update(pos=table_to_world(config, cam["pos"]), lookat=table_to_world(config, cam["lookat"]))
-        cameras[name] = scene.add_sensor(gs.sensors.RasterizerCameraOptions(**kwargs))
+        cameras[name] = scene.add_sensor(camera_options(**kwargs))
     return cameras
 
 
@@ -97,6 +146,9 @@ def build_scene(config, show_viewer=True):
             world_frame_size=viewer["world_frame_size"],
         ),
         show_viewer=show_viewer,
+        # Genesis prints its own running-FPS line on almost every step, which buries the recorder's
+        # progress over a long session. record.py reports steps/s on its status line instead.
+        profiling_options=gs.options.ProfilingOptions(show_FPS=False),
     )
 
     scene.add_entity(gs.morphs.Plane())
