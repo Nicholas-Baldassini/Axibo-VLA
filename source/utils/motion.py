@@ -176,21 +176,45 @@ def ik(target, duration=None, via=None, path="line", profile="minjerk", v_max=No
 
 
 def pick_and_place(pick, place, hover=0.10, lift=0.10, open=1.0, closed=0.0, approach_time=1.5, descend_time=1.0,
-                   grip_time=0.5, transfer_time=2.0, retreat_time=1.0, profile="minjerk", quat=None):
+                   grip_time=0.5, transfer_time=2.0, retreat_time=1.0, profile="minjerk", quat=None,
+                   pick_offset=(0.0, 0.0), place_offset=(0.0, 0.0), v_max=None, a_max=None):
     """Grasp at `pick` and release at `place`. Both are targets for the TCP, e.g. pick=RedCylinder().
 
-    Approach and transfer moves use an "arc" path raised `lift` above the hover height so the tool
-    lifts over anything in between; descend and retreat are vertical lines.
+    The approach is one continuous move: an arc raised `lift` over the way to a hover point above
+    `pick`, then on down to `pick`, so the tool never comes to rest above the object. The same
+    holds for the carry: one move from the grasp up to hover, over an arc to a hover point above
+    `place`, and down to `place`. Only the grasp and the release are stationary.
+
+    pick_offset and place_offset shift the two hover points sideways, in metres. With an offset the
+    last stretch of the descent is a diagonal that closes the gap to the object, so a demonstration
+    shows the tool correcting toward its target from wherever the hover happened to be. With the
+    default (0, 0) every descent is vertical and every demonstration reaches the object from the
+    same relative spot, which leaves a learned policy nothing to imitate once it is off by a
+    centimetre; that is what the first two policies trained on this plan did.
+
+    profile "trapezoid" with v_max / a_max moves at one cruise speed with short ramps, and the
+    *_time arguments become lower bounds. With "minjerk" a single bell-shaped profile spans each
+    whole move, so the tool is fastest halfway and creeps into the grasp, and it leaves the start
+    so gently that the first control steps of a recording are labelled with under a millimetre.
     """
     up = (0.0, 0.0, hover)
-    move = dict(profile=profile, quat=quat)
+    pick_hover = offset(pick, (pick_offset[0], pick_offset[1], hover))
+    place_hover = offset(place, (place_offset[0], place_offset[1], hover))
+    # The sideways correction is finished by `final` above the target, and the last stretch is
+    # vertical, so the fingers come straight down onto the object rather than sweeping in at an angle.
+    final = (0.0, 0.0, 0.03)
+    move = dict(profile=profile, quat=quat, v_max=v_max, a_max=a_max)
     return [
-        ik(offset(pick, up), approach_time, path="arc", lift=lift, gripper=open, **move),
-        ik(pick, descend_time, path="line", **move),
+        # arc: lifted over the way from wherever the tool starts to the hover point, then through
+        # the low point and down. The spline passes every via point without stopping.
+        ik(pick, approach_time + descend_time, path="arc", lift=lift,
+           via=[pick_hover, offset(pick, final)], gripper=open, **move),
         gripper(closed, grip_time),
-        ik(offset(pick, up), retreat_time, path="line", **move),
-        ik(offset(place, up), transfer_time, path="arc", lift=lift, **move),
-        ik(place, descend_time, path="line", **move),
+        # spline: straight up out of the grasp, across to the hover above the destination, and
+        # down. A natural spline through these points arches above hover height between the two
+        # hovers, which is the clearance the old arc provided.
+        ik(place, retreat_time + transfer_time + descend_time, path="spline",
+           via=[offset(pick, up), place_hover, offset(place, final)], **move),
         gripper(open, grip_time),
         ik(offset(place, up), retreat_time, path="line", **move),
     ]
@@ -261,11 +285,16 @@ def spline_path(start, goal, via=(), samples=400, **_):
 
 
 def arc_path(start, goal, via=(), lift=0.10, **_):
-    """Spline through start, a point raised `lift` above the higher end, and goal. Ignores `via`."""
+    """Spline through start, a point raised `lift` above the higher end of the first leg, then any
+    via points, then goal. With no via the first leg is start->goal, the original arc; with via
+    points it is start->via[0], so the lift clears the way to the first waypoint and the rest of
+    the path continues smoothly through the remaining points without stopping at any of them."""
     start, goal = np.asarray(start, dtype=float), np.asarray(goal, dtype=float)
-    mid = (start + goal) / 2
-    mid[2] = max(start[2], goal[2]) + lift
-    return spline_path(start, goal, [mid])
+    via = [np.asarray(p, dtype=float) for p in via]
+    first = via[0] if via else goal
+    mid = (start + first) / 2
+    mid[2] = max(start[2], first[2]) + lift
+    return spline_path(start, goal, [mid, *via])
 
 
 PATHS = {"line": line_path, "spline": spline_path, "arc": arc_path}

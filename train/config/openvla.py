@@ -23,17 +23,12 @@ DATA = {
     "session": None,
     "episodes": None,          # episode indices to train on, None = every episode in the session
     # Frames to keep from each episode, applied as episode[start:stop]; (None, None) keeps all.
-    # Every demonstration opens with the plan's home and idle actions, which is an unchanging image
-    # paired with a zero action. A policy that sees one frame and no proprioception cannot tell
-    # those apart from any later moment when the arm is near home, so they teach it to stand still
-    # and a rollout can settle into standing still and never start.
-    #
-    # 27 is exact for this plan, not a round number: the action at frame t reaches action.stride
-    # frames ahead, so with home(0.5) + idle(0.5) at 30 fps the delta first becomes non-zero at
-    # frame 27, in all 670 episodes. Cutting later would throw away the only frames that show the
-    # arm leaving rest, which is the behaviour the cut is meant to teach. Re-derive it if the plan's
-    # opening actions, record.fps or action.stride change.
-    "frames": (27, None),
+    # The first session (piper_stack_2026-09-26_00-01-05) stored the plan's opening home and idle
+    # actions, an unchanging image paired with a zero action that teaches a history-free policy to
+    # stand still, and needed (27, None) here to cut them. The recorder now leaves those frames out
+    # at the source (utils/recorder.py, first_move), so sessions recorded after 2026-09-27 keep
+    # everything. Set (27, None) again only to train on the first session.
+    "frames": (None, None),
     "video_backend": "pyav",   # frame decoder for the dataset videos ("torchcodec" needs an FFmpeg build)
     "num_workers": 4,          # DataLoader processes decoding frames in parallel; 0 decodes in the main process
 }
@@ -58,6 +53,14 @@ ACTION = {
     # OpenVLA was pretrained on 3-10 Hz data; a 30 Hz delta is too small to survive 256-bin
     # quantization, so the action reaches 3 frames ahead (10 Hz) and the policy will run at that rate.
     "stride": 3,
+    # What the 256 bins span per normalized dimension. OpenVLA's "q99" maps the 1st..99th
+    # percentiles and clips the rest, which on this data caps the demonstrations' fast sideways
+    # moves: the plan covers its approach in about five control steps, so the per-step dy reaches
+    # 0.064 m against a q99 of 0.037. Measured over all 670 episodes, that clipping loses a mean of
+    # 1.3 cm and up to 6 cm of approach in y, and the first policy landed short and stalled.
+    # "minmax" spans the full range; the data is a synthetic plan with no outliers to guard against,
+    # and a bin is still 0.4 mm of dy.
+    "bounds": "minmax",
     "components": [
         {"key": "action", "dims": (0, 1, 2), "delta": "translation", "normalize": True},   # tool center xyz, table coords
         {"key": "action", "dims": (3, 4, 5, 6), "delta": "rotation", "normalize": True},  # tool quaternion (w, x, y, z)
@@ -107,14 +110,20 @@ OPTIM = {
     # 5.7 GB, which leaves about 4 GB for activations on an 11 GB card: batch_size 4 runs out in the
     # LoRA forward, batch_size 1 fits with room to spare. Raise batch_size and drop the
     # accumulation on a larger card.
-    "batch_size": 1,
-    "grad_accumulation_steps": 4,
-    "max_steps": 5000,             # optimizer steps
+    # Measured on a 12 GB RTX 4070 at the same effective batch of 4: batch_size 1 runs 0.41 step/s
+    # at 9.6 GB peak, batch_size 2 runs 0.48 step/s at 10.8 GB, batch_size 4 runs out of memory.
+    "batch_size": 2,
+    "grad_accumulation_steps": 2,
+    # The first run stopped at 5000 steps, 20,000 samples of the 214,909 frames, with the loss
+    # still falling and 76% token accuracy; closed loop it landed 2-11 cm from the object. 20,000
+    # steps is 80,000 samples, about 11.6 hours at 0.48 step/s, and a checkpoint every 1000 steps
+    # means the run can be stopped early and the newest step_* directory used.
+    "max_steps": 20000,            # optimizer steps
 }
 
 SAVE = {
     "root": str(TRAIN_DIR / "runs"),   # one directory per run: <config>_<date>_<time>
-    "every_steps": 1000,                # LoRA adapter checkpoint every N optimizer steps, plus one at the end
+    "every_steps": 1000,               # LoRA adapter checkpoint every N optimizer steps, plus one at the end
     "merged": False,                   # also write the base model with the adapter merged in at the end
                                        # (a full copy of the checkpoint, 15 GB for the 7B; loads with from_pretrained)
 }

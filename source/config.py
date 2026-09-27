@@ -84,14 +84,22 @@ CAMERAS = {
         "lookat": (0.0, 0.0, 0.0),
         "up": (1.0, 0.0, 0.0),
     },
-    # Opposite the robot, past the +x edge, looking back at the table center and pitched down.
+    # Opposite the robot, past the +x edge, looking back at the workspace and pitched down. This is
+    # the policy's input, so it was placed by measurement (2026-09-27, tool at hover over an object):
+    #   pos (0.7, 0, 0.45) lookat (0, 0, 0.12), the first session:  a 4 cm tool move changes the
+    #     image by 1.22/255 in x and 1.87/255 in y; a 4 cm cube covers ~456 px at 640x480.
+    #   pos (0.45, 0, 0.55) lookat (-0.08, 0, 0.02), this one:      2.02/255 in x, 2.77/255 in y;
+    #     ~821 px per cube. The whole placement area and the arm stay in frame.
+    # x is the camera's depth axis, the direction the first policies drifted along unseen, so the
+    # closer, steeper view is what makes that motion visible. An oblique view from the side scored
+    # higher still (2.26 / 3.25) but skews the workspace and hides more behind the arm.
     "front": {
         "res": (640, 480),
         "fov": 60,
         "near": 0.01,
         "far": 10.0,
-        "pos": (0.7, 0.0, 0.45),
-        "lookat": (0.0, 0.0, 0.12),
+        "pos": (0.45, 0.0, 0.55),
+        "lookat": (-0.08, 0.0, 0.02),
         "up": (0.0, 0.0, 1.0),
     },
     # Wrist camera: a RealSense D435 color stream at 640x480. The intrinsics below are the nominal
@@ -196,6 +204,24 @@ RANDOMIZATION = {
         "randomize": True,            # random yaw per object each episode; the grasp turns to match the picked object
         "yaw_range": (-180.0, 180.0), # degrees
     },
+    # Sideways offset of the hover points above the source and the destination, drawn per episode
+    # for each. This is what puts corrections into the demonstrations: with the hover displaced,
+    # the descent has to close a visible gap to the object, so the recorded actions depend on where
+    # the tool is relative to its target instead of only on the phase of the plan. Measured on the
+    # first session, recorded without this, the tool sat within 0.8 mm (std) of the same spot
+    # relative to the object at every descent, and the policies trained on it ignored 4 cm
+    # displacements at hover entirely. 0.03 m is about the error those policies made.
+    "approach": {
+        "randomize": True,
+        "max_offset": 0.03,           # m; (dx, dy) uniform in a square of this half-width
+    },
+    # Start pose: control.home_qpos with a small per-episode perturbation of the arm joints, so the
+    # first frames of the demonstrations are not one identical picture and a policy does not tie
+    # its opening move to a single pixel-exact arm configuration. The gripper joints are left alone.
+    "start": {
+        "randomize": True,
+        "joint_range_deg": 5.0,       # each arm joint: uniform in +-this, degrees
+    },
     "placement": {
         "randomize": True,            # random object positions on the table each episode
         # Table coords where object centers may land. Kept within 0.40 m of the robot base at
@@ -233,7 +259,7 @@ def instruction(task):
     )
 
 
-def make_plan(task, scene, hover=0.10):
+def make_plan(task, scene, hover=0.10, pick_offset=(0.0, 0.0), place_offset=(0.0, 0.0)):
     """Motion plan for `task` on the object layout in `scene`, executed in order by run_plan.py and record.py.
 
     Targets are object references, resolved to table coords per env by env_config as its last
@@ -241,6 +267,10 @@ def make_plan(task, scene, hover=0.10):
     orientation is IK["target_quat"] (pointing down) turned about z to close across the picked
     object's faces given its yaw, and is held for the whole pick-and-place so the wrist never
     twists mid-carry. See utils/motion.py for the ik options (path shape, timing profile, via points).
+
+    pick_offset / place_offset displace the hover points sideways (see randomization.approach).
+    The opening home and idle settle the arm before it moves; the recorder does not store those
+    frames (see Recorder.capture), so a recorded episode starts with the first frame that moves.
     """
     src, dst = Obj(task["source"]), Obj(task["destination"])
     quat = grasp_quat(scene["objects"][task["source"]], IK["target_quat"])
@@ -249,7 +279,14 @@ def make_plan(task, scene, hover=0.10):
         idle(0.5),
         # lift keeps the arc apex at hover + 0.02: with the gripper vertical the arm cannot reach much
         # higher than 0.12 above the table, so a taller arc would sag through an infeasible waypoint.
-        *pick_and_place(pick=src(), place=on_top(dst, src, clearance=0.02), hover=hover, lift=0.02, quat=quat),
+        # One cruise speed for every move (trapezoid profile), so the recorded deltas are the same
+        # size along the whole approach and carry instead of peaking mid-path and creeping into
+        # the grasp. 0.3 m/s is under the old min-jerk peak of about 0.7 m/s on the approach and
+        # the PD controller tracks it; 1.5 m/s^2 gives 0.2 s ramps, and the decelerating stretch
+        # before a target is 3 cm, the length of the vertical finish in pick_and_place.
+        *pick_and_place(pick=src(), place=on_top(dst, src, clearance=0.02), hover=hover, lift=0.02, quat=quat,
+                        pick_offset=pick_offset, place_offset=place_offset,
+                        profile="trapezoid", v_max=0.3, a_max=1.5),
         home(1.0),   # return home after the retreat; the success check starts when this action begins
     ]
 
@@ -261,7 +298,7 @@ RECORD = {
     # Episodes per env; a session records workers * n_envs * epochs attempts. 40 envs x 15 epochs
     # = 600 attempts, which at the ~97% success rate of this plan lands around 580 saved
     # demonstrations. Failed attempts are discarded, so ask for a few more than you need.
-    "epochs": 17,
+    "epochs": 25,
     # Recorder processes run in parallel, each simulating ik.n_envs envs and merged into one dataset
     # at the end. On a CPU backend camera rendering is single-threaded per process and is the
     # bottleneck, so more envs in one process stop helping around 16 while extra processes scale
@@ -376,6 +413,18 @@ def env_config(config, env_idx, episode_idx=0):
         for spec in cfg["scene"]["objects"].values():
             spec["yaw"] = float(rng.uniform(lo, hi))
 
+    if rand.get("start", {}).get("randomize"):
+        n_arm = len(cfg["control"]["arm_joints"])
+        home_qpos = np.array(cfg["control"]["home_qpos"], dtype=float)
+        home_qpos[:n_arm] += np.deg2rad(rng.uniform(-rand["start"]["joint_range_deg"], rand["start"]["joint_range_deg"], size=n_arm))
+        cfg["control"]["home_qpos"] = home_qpos
+
+    offsets = {"pick_offset": (0.0, 0.0), "place_offset": (0.0, 0.0)}
+    if rand.get("approach", {}).get("randomize"):
+        r = rand["approach"]["max_offset"]
+        offsets = {k: tuple(float(v) for v in rng.uniform(-r, r, size=2)) for k in offsets}
+    cfg["approach_offsets"] = offsets   # kept in the session's episode records, so a dataset can be checked
+
     # Last step: build the plan for this task and layout, and turn object references into table coords.
-    cfg["plan"] = resolve_plan(make_plan(cfg["task"], cfg["scene"]), cfg["scene"])
+    cfg["plan"] = resolve_plan(make_plan(cfg["task"], cfg["scene"], **offsets), cfg["scene"])
     return cfg

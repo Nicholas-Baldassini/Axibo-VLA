@@ -373,6 +373,15 @@ class Recorder:
         self.prev = None
         self.prev_target_q = None
         self.prev_quat_cmd = None
+        # Frames before an env's first task-space move are not stored. The plan opens with home and
+        # idle actions that settle the arm: an unchanging image paired with a zero action, which a
+        # policy with no history cannot tell from any later moment near home, so it learns to stand
+        # still. The first session kept them and training had to cut the first 27 frames of every
+        # episode (train/config/openvla.py data.frames); recording them out is the same cut at the
+        # source, with nothing to re-derive when the plan's timing changes.
+        self.first_move = np.array([
+            next((k for k, a in enumerate(plan) if a["type"] == "ik"), 0) for plan in runner.plans
+        ], dtype=int)
 
     def _push(self, i, frame, next_obs_rows=None):
         """Complete a pending frame's look-ahead actions and hand it to env i's writer."""
@@ -481,7 +490,7 @@ class Recorder:
 
         images = {cam: tensor_to_array(self.cameras[cam].read().rgb) for cam in self.cam_names}   # (n, H, W, 3)
 
-        for i in np.flatnonzero(self.active):
+        for i in np.flatnonzero(self.active & (runner.action_idx >= self.first_move)):
             frame = {name: rows[name][i] for name in self.numeric if name not in self.lookahead}
             frame["success"] = np.array([1.0], dtype=np.float32)
             frame["task"] = self.instructions[i]

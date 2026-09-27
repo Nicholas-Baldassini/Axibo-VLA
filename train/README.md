@@ -7,7 +7,9 @@ train/
 ├── config/            one config per run type; openvla.py is the real run, smoke.py a laptop-sized pipeline test
 ├── checkpoints/       downloaded base models (not committed)
 ├── runs/              one directory per training run (not committed)
-├── download.py        fetches a checkpoint into checkpoints/
+├── download.py        one command for a new machine: base checkpoint, a run, a session, from Hugging Face
+├── upload.py          a run to Hugging Face, as a version beside earlier ones (sessions: source/upload.py)
+├── infer.py           the policy in the simulator, from a small GUI
 ├── finetune.py        the training loop
 ├── data.py            LeRobot session -> (image, instruction, action tokens) samples
 ├── actions.py         action vector from the recorded columns, normalization, action tokens
@@ -19,6 +21,23 @@ python train/download.py                   # the base checkpoint, once
 python train/finetune.py --config smoke    # pipeline test, runs on a laptop in a minute
 python train/finetune.py --config openvla  # the real fine-tune, on the GPU machine
 ```
+
+## Moving between machines
+
+Nothing large is in git. One command fetches the base checkpoint, a fine-tuned run and a recorded
+session from Hugging Face and puts each where the code expects it:
+
+```
+python train/download.py --run Boominator/vlaBlockStack --dataset Boominator/vlaTestStorage
+python train/infer.py train/runs/<run>             # the policy in the simulator
+python train/finetune.py --config openvla          # a new fine-tune on the session
+```
+
+Repos hold versions side by side, one folder per run or session, named after the directory on
+disk; the newest is taken unless `--version` names one, and `--list` shows what is there. Going the
+other way, `python train/upload.py <run dir> --repo ...` pushes a run with the recording's config
+beside it, and `python source/upload.py <session dir> --repo ...` pushes a session. Both compare
+every file with the repo first and print what is new, already there, or would be overwritten.
 
 ## The checkpoint
 

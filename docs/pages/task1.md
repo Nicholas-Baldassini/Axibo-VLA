@@ -17,7 +17,7 @@ python source/record.py
 
 It runs `record.epochs` rounds. In every round each of the `n_envs` parallel environments gets its own config from `env_config(config, env, episode)`, which assigns the task pair round robin and draws every object's position and yaw from the session seed together with the env and episode numbers. The plan for that task is generated from object-relative targets, `pick_and_place(pick=Obj(source)(), place=on_top(destination, source))`, with the gripper turned to close across the picked object's faces, and resolved against the drawn layout as the last step.
 
-**Dataset.** <mark>[[link](https://huggingface.co/datasets/Baldinator/vlaPickandPlaceDataset)]</mark>
+**Dataset.** <mark>[[link](https://huggingface.co/datasets/Boominator/vlaTestStorage)]</mark>
 Please request access, it is a private dataset. (Full dataset not yet uploaded)
 
 ## Held-out pair

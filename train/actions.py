@@ -58,15 +58,28 @@ def build_action_table(columns, feature_names, ranges, action_cfg):
     return np.concatenate(parts, axis=1), names, np.array(normalize, dtype=bool)
 
 
-def action_statistics(table, normalize_mask):
-    """Per-dimension statistics in OpenVLA's dataset_statistics layout (plain lists, JSON-ready)."""
+def action_statistics(table, normalize_mask, bounds="q99"):
+    """Per-dimension statistics in OpenVLA's dataset_statistics layout (plain lists, JSON-ready).
+
+    bounds picks what the q01/q99 slots hold, which is what normalize_actions maps onto [-1, 1]:
+        "q99"     the 1st and 99th percentiles, OpenVLA's convention, which clips the outer 2%
+        "minmax"  the dataset minimum and maximum, so nothing is clipped
+    The slots keep their q01/q99 names either way, so the file loads wherever OpenVLA's does.
+    """
+    if bounds == "q99":
+        low, high = np.quantile(table, 0.01, axis=0), np.quantile(table, 0.99, axis=0)
+    elif bounds == "minmax":
+        low, high = table.min(axis=0), table.max(axis=0)
+    else:
+        raise ValueError(f"unknown action bounds {bounds!r}; use \"q99\" or \"minmax\"")
     return {
         "mean": table.mean(axis=0).tolist(),
         "std": table.std(axis=0).tolist(),
         "max": table.max(axis=0).tolist(),
         "min": table.min(axis=0).tolist(),
-        "q01": np.quantile(table, 0.01, axis=0).tolist(),
-        "q99": np.quantile(table, 0.99, axis=0).tolist(),
+        "q01": low.tolist(),
+        "q99": high.tolist(),
+        "bounds": bounds,
         "mask": [bool(m) for m in normalize_mask],   # True: the dimension is normalized by q01..q99
     }
 

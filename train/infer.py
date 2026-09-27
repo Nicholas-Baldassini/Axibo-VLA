@@ -35,6 +35,7 @@ import setuptools  # noqa: F401  (imported first on purpose, see below)
 import argparse
 import copy
 import json
+import os
 import sys
 import threading
 from collections import deque
@@ -79,6 +80,15 @@ def load_run(path):
     run_dir, adapter = resolve_checkpoint(path)
     run = json.loads((run_dir / "config.json").read_text())
 
+    # The base checkpoint is also recorded as an absolute path. When it is not there, the same
+    # checkpoint under this machine's train/checkpoints/ (where train/download.py puts it) stands in.
+    checkpoint = Path(run["config"]["model"]["checkpoint"])
+    if not checkpoint.exists():
+        local = TRAIN_DIR / "checkpoints" / checkpoint.name
+        if not local.exists():
+            sys.exit(f"base checkpoint not found at {checkpoint} or {local}.\nRun train/download.py first.")
+        run["config"]["model"]["checkpoint"] = str(local)
+
     stats_file = adapter / "dataset_statistics.json"
     if not stats_file.exists():
         stats_file = run_dir / "dataset_statistics.json"
@@ -92,7 +102,10 @@ def load_run(path):
     # for it: the scene, the task phrasing and the held-out pair are all inference needs from the
     # recording, so the videos do not have to come along.
     session = Path(run["session"])
-    candidates = [session / "config.json", run_dir / "session_config.json", adapter / "session_config.json"]
+    # The session path is the recording machine's; its last component is the session's name, which
+    # train/download.py keeps, so datasets/<name>/config.json on this machine is the same file.
+    candidates = [session / "config.json", run_dir / "session_config.json", adapter / "session_config.json",
+                  ROOT / "datasets" / session.name / "config.json"]
     session_cfg_path = next((c for c in candidates if c.exists()), None)
     if session_cfg_path is None:
         sys.exit(f"cannot find the recording config this run trained on.\nLooked for: "
@@ -136,7 +149,10 @@ class Policy:
         self.device = resolve_device(model_cfg["device"])
         self.dtype = resolve_dtype(model_cfg["dtype"], self.device)
 
-        self.processor = load_processor(str(adapter))
+        # Loaded with the CPU as torch's default device: after gs.init(backend=gs.cuda) the default
+        # is cuda:0, and the processor calls .numpy() on tensors it builds while loading.
+        with torch.device("cpu"):
+            self.processor = load_processor(str(adapter))
         self.tokenizer = self.processor.tokenizer
         base = load_base(model_cfg, self.device, self.dtype)
         self.model = PeftModel.from_pretrained(base, str(adapter)).eval()
@@ -161,8 +177,12 @@ class Policy:
         from data import prompt_ids
 
         torch = self.torch
-        pixel_values = self.processor.image_processor(
-            Image.fromarray(image), return_tensors="pt")["pixel_values"].to(self.device, self.input_dtype)
+        # Preprocess on the CPU explicitly: once Genesis runs on CUDA, torch's default device is
+        # cuda:0, and the processor's numpy-based steps cannot take a CUDA tensor.
+        with torch.device("cpu"):
+            pixel_values = self.processor.image_processor(
+                Image.fromarray(image), return_tensors="pt")["pixel_values"]
+        pixel_values = pixel_values.to(self.device, self.input_dtype)
         input_ids = torch.tensor([prompt_ids(self.tokenizer, instruction)], device=self.device)
 
         with torch.inference_mode():
@@ -196,6 +216,13 @@ class Simulator:
         self._env_config, self._reset_envs = env_config, reset_envs
         self._move_tcp, self._tcp_pos_from_link = move_tcp, tcp_pos_from_link
         self._to_array = tensor_to_array
+
+        # Madrona reserves a 4 GB device-side malloc heap by default (gs_madrona src/mw/cuda_exec.cpp,
+        # setCudaHeapSize), which is most of what the batch renderer costs here. Measured on this
+        # scene, one env, three 640x480 cameras: 5.2 GB at the default, 1.4 GB at 256 MB, and the
+        # rendered frames are pixel-identical. That is what lets the renderer share a 12 GB card
+        # with the policy. A value already set in the shell wins.
+        os.environ.setdefault("MADRONA_MWGPU_DEVICE_HEAP_SIZE", str(256 * 1024 * 1024))
 
         cfg = copy.deepcopy(CONFIG)
         cfg["sim"]["backend"] = backend
@@ -422,23 +449,17 @@ class Dashboard:
         grid = self.fig.add_gridspec(4, 6, left=0.04, right=0.98, top=0.94, bottom=0.26,
                                      hspace=0.55, wspace=0.45)
 
-        # cameras: the one the policy reads is drawn large and framed
+        # Only the camera the policy reads is shown: what the window displays is what the model sees.
         self.image_axes = {}
         self.image_artists = {}
-        big = self.fig.add_subplot(grid[0:2, 0:2])
-        self.image_axes[self.model_cam] = big
-        others = [c for c in self.cameras if c != self.model_cam]
-        for row, cam in enumerate(others[:2]):
-            self.image_axes[cam] = self.fig.add_subplot(grid[row, 2])
-        for cam, ax in self.image_axes.items():
-            ax.set_xticks([]); ax.set_yticks([])
-            seen = cam == self.model_cam
-            ax.set_title(f"{cam}  <- policy input" if seen else cam,
-                         fontsize=10, color="tab:blue" if seen else "0.3")
-            for side in ax.spines.values():
-                side.set_color("tab:blue" if seen else "0.8")
-                side.set_linewidth(2.0 if seen else 0.8)
-            self.image_artists[cam] = ax.imshow(np.zeros((2, 2, 3), np.uint8), interpolation="nearest")
+        ax = self.fig.add_subplot(grid[0:2, 0:3])
+        self.image_axes[self.model_cam] = ax
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_title(f"{self.model_cam}  <- policy input", fontsize=10, color="tab:blue")
+        for side in ax.spines.values():
+            side.set_color("tab:blue")
+            side.set_linewidth(2.0)
+        self.image_artists[self.model_cam] = ax.imshow(np.zeros((2, 2, 3), np.uint8), interpolation="nearest")
 
         self.ax_status = self.fig.add_subplot(grid[2:4, 0:3])
         self.ax_status.axis("off")
@@ -602,15 +623,22 @@ def main():
     recorded_on = (json.loads((bundle["session"] / "metadata.json").read_text())
                    .get("hardware", {}).get("genesis_backend")
                    if (bundle["session"] / "metadata.json").exists() else None)
-    backend = args.backend or recorded_on or "cpu"
+    # Without a metadata.json to say what recorded the data, cuda is the default: measured on this
+    # checkpoint, the CPU rasterizer's frame of the same layout roughly doubles every predicted
+    # rotation and the y translation against the batch renderer's frame.
+    backend = args.backend or recorded_on or "cuda"
     if args.backend and recorded_on and args.backend != recorded_on:
         print(f"  warning: rendering with {args.backend} but the data was recorded with "
               f"{recorded_on}; the policy sees a different image than it was trained on")
     print(f"renderer  {backend}" + (f"  (data recorded with {recorded_on})" if recorded_on else ""))
+    # The policy is built before the simulator on purpose: gs.init(backend=gs.cuda) switches
+    # torch's default device to cuda:0 (measured: torch.get_default_device() reads cuda:0 after
+    # it), and the checkpoint's image processor calls .numpy() on tensors it creates while loading,
+    # which fails for a CUDA tensor. Loading the policy first keeps that code on the CPU.
+    policy = Policy(run, bundle["adapter"], bundle["stats"])
     sim = Simulator(session_cfg, backend=backend)
     for line in sim.warn:
         print(f"  warning: {line}")
-    policy = Policy(run, bundle["adapter"], bundle["stats"])
 
     rollout = Rollout(sim, policy, fps=session_cfg["record"]["fps"])
     rollout.start()

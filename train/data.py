@@ -121,7 +121,7 @@ class OpenVLASamples(Dataset):
         self.index = np.concatenate([np.arange(s, e)[start:stop] for s, e in ranges])
         if len(self.index) == 0:
             sys.exit(f"data.frames {(start, stop)} leaves no frames in any episode")
-        self.stats = action_statistics(self.actions[self.index], mask)
+        self.stats = action_statistics(self.actions[self.index], mask, config["action"].get("bounds", "q99"))
         self.normalized = normalize_actions(self.actions, self.stats)
         self.image_shape = tuple(self.dataset.meta.features[self.image_key]["shape"])
 
