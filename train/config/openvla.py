@@ -7,7 +7,7 @@ the checkpoint, LoRA, the optimizer and schedule, saving, logging and rollout pr
 
     python train/finetune.py --config openvla
 
-Another file in this folder can import CONFIG and override parts of it (see smoke.py).
+Another file in this folder can import CONFIG and override parts of it (see openvla_80gb.py).
 """
 
 from pathlib import Path
@@ -18,37 +18,20 @@ ROOT = TRAIN_DIR.parent
 SEED = 0
 
 DATA = {
-    # A recording session directory (datasets/piper_stack_<date>_<time>) or its dataset/ subdirectory.
-    # None picks the most recently written session under datasets/.
+
     "session": None,
-    "episodes": None,          # episode indices to train on, None = every episode in the session
-    # Frames to keep from each episode, applied as episode[start:stop]; (None, None) keeps all.
-    # The first session (piper_stack_2026-09-26_00-01-05) stored the plan's opening home and idle
-    # actions, an unchanging image paired with a zero action that teaches a history-free policy to
-    # stand still, and needed (27, None) here to cut them. The recorder now leaves those frames out
-    # at the source (utils/recorder.py, first_move), so sessions recorded after 2026-09-27 keep
-    # everything. Set (27, None) again only to train on the first session.
-    "frames": (None, None),
-    "video_backend": "pyav",   # frame decoder for the dataset videos ("torchcodec" needs an FFmpeg build)
-    "num_workers": 4,          # DataLoader processes decoding frames in parallel; 0 decodes in the main process
+    "episodes": None,          
+    "frames": (None, None), # trim episodes
+    "video_backend": "pyav",   
+    "num_workers": 4,          
 }
-
-# OpenVLA sees one RGB image and the instruction, nothing else: the image is resized to 224x224 by the
-# checkpoint's processor, and the instruction is the dataset's per-frame task string. Proprioception is
-# not an input of this architecture (OpenVLA-OFT adds it), so observation.state stays unused here.
 OBSERVATION = {
-    "image": "observation.images.front",
+    "image": ["observation.images.front", "observation.images.wrist"],
+    "crops": {"observation.images.front": [40, 480, 0, 640]},     # rows top:bottom, cols left:right kept
+    "augment": True,
 }
 
-# The action vector the model predicts, one token per dimension. Components are concatenated in
-# order. Each takes the "dims" columns of a recorded key at the current frame t and at t + stride
-# (clamped to the episode's last frame) and produces:
-#     "delta": None           the value at t + stride (an absolute command, e.g. the gripper opening)
-#     "delta": "translation"  value[t + stride] - value[t]
-#     "delta": "rotation"     the rotation from quat[t] to quat[t + stride] as a rotation vector (4 dims in, 3 out)
-# "normalize" maps a dimension to [-1, 1] by its 1st..99th percentiles before binning (OpenVLA's
-# convention); leave it off for a dimension that already lives in [-1, 1] such as the gripper.
-# The default is OpenVLA's own 7-D layout: tool translation, tool rotation, gripper.
+
 ACTION = {
     # OpenVLA was pretrained on 3-10 Hz data; a 30 Hz delta is too small to survive 256-bin
     # quantization, so the action reaches 3 frames ahead (10 Hz) and the policy will run at that rate.
@@ -61,10 +44,18 @@ ACTION = {
     # "minmax" spans the full range; the data is a synthetic plan with no outliers to guard against,
     # and a bin is still 0.4 mm of dy.
     "bounds": "minmax",
+    # Translation and rotation from action.clean_rate: the plan's undisturbed pursuit rate toward
+    # the next waypoint and the grasp orientation, m/s in table coordinates and rad/s as a rotation
+    # vector in the tool frame (the frame infer.py applies it in), scaled by stride / fps to the
+    # displacement per control step. `action` itself is the disturbed command the arm was sent;
+    # its own rate would teach the pushes, the clean rate teaches the correction back.
+    # The gripper is the plan's 0/1 decision (OpenVLA treats the gripper as binary; a policy
+    # trained on the interpolated command never committed), read one frame ahead, where the plan
+    # issues it with the first step of the following move.
     "components": [
-        {"key": "action", "dims": (0, 1, 2), "delta": "translation", "normalize": True},   # tool center xyz, table coords
-        {"key": "action", "dims": (3, 4, 5, 6), "delta": "rotation", "normalize": True},  # tool quaternion (w, x, y, z)
-        {"key": "action", "dims": (7,), "delta": None, "normalize": False},               # gripper opening 0..1
+        {"key": "action.clean_rate", "dims": (0, 1, 2), "scale": 0.1, "normalize": True},
+        {"key": "action.clean_rate", "dims": (3, 4, 5), "scale": 0.1, "normalize": True},
+        {"key": "action.gripper_target", "dims": (0,), "normalize": False, "lookahead": 1},
     ],
 }
 
@@ -83,9 +74,6 @@ MODEL = {
     # the 7B checkpoint is ~15 GB in bfloat16, so an 11 GB card runs out partway through .to(device).
     "load_in_4bit": True,
     "gradient_checkpointing": False,   # recompute activations in the backward pass to save memory
-    # Random-init miniature of the architecture (same code path, tokenizer and processor, ~30M
-    # parameters) to exercise the pipeline where the 7B model cannot run. It learns nothing useful.
-    "tiny": False,
 }
 
 # LoRA on every linear layer (vision backbone, projector and language model), as in OpenVLA's own

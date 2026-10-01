@@ -5,14 +5,6 @@ training code does it (prismatic/vla/action_tokenizer.py and its bounds-q99 norm
 """
 
 import numpy as np
-from scipy.spatial.transform import Rotation
-
-
-def rotation_delta(q_from, q_to):
-    """Rotation vectors taking q_from to q_to, (n, 4) quaternions (w, x, y, z) -> (n, 3)."""
-    r_from = Rotation.from_quat(np.asarray(q_from)[:, [1, 2, 3, 0]])
-    r_to = Rotation.from_quat(np.asarray(q_to)[:, [1, 2, 3, 0]])
-    return (r_from.inv() * r_to).as_rotvec()
 
 
 def episode_ranges(episode_index):
@@ -29,31 +21,23 @@ def build_action_table(columns, feature_names, ranges, action_cfg):
     columns: {key: (N, k) array} for every key the components use. feature_names: {key: [k names]}.
     ranges: the episodes' [start, end) rows, so a frame's target never crosses into the next episode.
     """
-    stride = int(action_cfg["stride"])
     n = len(next(iter(columns.values())))
-    target = np.arange(n)
-    for start, end in ranges:
-        target[start:end] = np.minimum(np.arange(start, end) + stride, end - 1)
-
     parts, names, normalize = [], [], []
     for comp in action_cfg["components"]:
         key, dims = comp["key"], list(comp["dims"])
         col = columns[key]
-        now, ahead = col[:, dims], col[target][:, dims]
-        col_names = [feature_names[key][d] for d in dims]
-        delta = comp.get("delta")
-        if delta is None:
-            values, part_names = ahead, col_names
-        elif delta == "translation":
-            values, part_names = ahead - now, [f"d{c}" for c in col_names]
-        elif delta == "rotation":
-            if len(dims) != 4:
-                raise ValueError(f"'rotation' needs the 4 quaternion columns (w, x, y, z), got dims {dims}")
-            values, part_names = rotation_delta(now, ahead), ["drot_x", "drot_y", "drot_z"]
-        else:
-            raise ValueError(f"unknown delta {delta!r} in action component {comp}")
-        parts.append(np.asarray(values, dtype=np.float32))
-        names += part_names
+        # Each component is a recorded column read `lookahead` frames ahead (clamped to the
+        # episode's last frame) and multiplied by `scale`: the clean rate in m/s and rad/s with
+        # scale = stride / fps becomes the displacement per control step; the gripper decision is
+        # read one frame ahead, where the plan issues it with the first step of the next move.
+        idx = np.arange(n)
+        ahead = int(comp.get("lookahead", 0))
+        if ahead:
+            for start, end in ranges:
+                idx[start:end] = np.minimum(np.arange(start, end) + ahead, end - 1)
+        values = col[idx][:, dims].astype(np.float32) * float(comp.get("scale", 1.0))
+        parts.append(values)
+        names += [feature_names[key][d] for d in dims]
         normalize += [bool(comp.get("normalize", True))] * values.shape[1]
     return np.concatenate(parts, axis=1), names, np.array(normalize, dtype=bool)
 

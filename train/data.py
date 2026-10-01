@@ -1,8 +1,9 @@
 """
 Training samples for OpenVLA straight out of a recorded LeRobot session, no format conversion.
 
-Each sample is one frame: the configured camera image, that frame's instruction, and the action
-vector built from the recorded columns (actions.py). The token sequence is OpenVLA's own:
+Each sample is one frame: the configured camera image(s) composed by observe.py, that frame's
+instruction, and the action vector built from the recorded columns (actions.py). The token
+sequence is OpenVLA's own:
 
     <s>In: What action should the robot take to {instruction}?\nOut: {action tokens}</s>
 
@@ -17,9 +18,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torchvision.transforms.functional as TVF
 from torch.utils.data import Dataset
 
+import observe
 from actions import action_statistics, build_action_table, episode_ranges, normalize_actions
 from model import load_processor
 
@@ -95,9 +96,12 @@ class OpenVLASamples(Dataset):
             self.repo_id, root=self.session / "dataset",
             episodes=data_cfg["episodes"], video_backend=data_cfg["video_backend"],
         )
-        self.image_key = config["observation"]["image"]
-        if self.image_key not in self.dataset.meta.video_keys:
-            sys.exit(f"observation.image {self.image_key!r} is not a camera of this dataset: {self.dataset.meta.video_keys}")
+        self.view = observe.spec(config["observation"])
+        self.image_key = " + ".join(self.view["keys"])
+        for key in self.view["keys"]:
+            if key not in self.dataset.meta.video_keys:
+                sys.exit(f"observation.image {key!r} is not a camera of this dataset: {self.dataset.meta.video_keys}")
+        self.rng = np.random.default_rng(config.get("seed", 0))
         self.checkpoint = config["model"]["checkpoint"]
         self.processor, self.tokenizer, self.action_tokenizer = processor, processor.tokenizer, action_tokenizer
 
@@ -107,7 +111,8 @@ class OpenVLASamples(Dataset):
         for key in keys:
             if key not in self.dataset.meta.features:
                 sys.exit(f"action component key {key!r} is not in this dataset: {list(self.dataset.meta.features)}")
-        columns = {k: np.asarray(hf[k], dtype=np.float32) for k in keys}
+        # (N, width) even for a single-value feature such as action.gripper_target, which comes back 1-D.
+        columns = {k: np.asarray(hf[k], dtype=np.float32).reshape(len(hf), -1) for k in keys}
         names = {k: self._names(k, columns[k].shape[1]) for k in keys}
         ranges = episode_ranges(np.asarray(hf["episode_index"]))
         self.actions, self.action_names, mask = build_action_table(columns, names, ranges, config["action"])
@@ -123,7 +128,16 @@ class OpenVLASamples(Dataset):
             sys.exit(f"data.frames {(start, stop)} leaves no frames in any episode")
         self.stats = action_statistics(self.actions[self.index], mask, config["action"].get("bounds", "q99"))
         self.normalized = normalize_actions(self.actions, self.stats)
-        self.image_shape = tuple(self.dataset.meta.features[self.image_key]["shape"])
+        self.image_shape = self.canvas(0).shape
+
+    def canvas(self, row):
+        """The composed uint8 image of dataset row `row`, before augmentation and resizing."""
+        item = self.dataset[int(row)]
+        return observe.compose({k: self._uint8(item[k]) for k in self.view["keys"]}, self.view)
+
+    @staticmethod
+    def _uint8(tensor):
+        return (tensor.permute(1, 2, 0).numpy() * 255).round().astype(np.uint8)
 
     def _names(self, key, width):
         names = self.dataset.meta.features[key].get("names")
@@ -134,6 +148,7 @@ class OpenVLASamples(Dataset):
         # pickle, so each worker reloads it from the checkpoint on first use.
         state = self.__dict__.copy()
         state["processor"] = state["tokenizer"] = None
+        state["rng"] = None          # each worker reseeds itself, so crops differ between workers
         return state
 
     def _ensure_processor(self):
@@ -146,9 +161,13 @@ class OpenVLASamples(Dataset):
 
     def __getitem__(self, i):
         self._ensure_processor()
+        if self.rng is None:
+            info = torch.utils.data.get_worker_info()
+            self.rng = np.random.default_rng([info.seed if info else 0, i])
         row = int(self.index[i])
         item = self.dataset[row]
-        image = TVF.to_pil_image(item[self.image_key])
+        canvas = observe.compose({k: self._uint8(item[k]) for k in self.view["keys"]}, self.view)
+        image = observe.train_view(canvas, self.view, self.rng)
         pixel_values = self.processor.image_processor(image, return_tensors="pt")["pixel_values"][0]
         input_ids, labels = encode_sample(self.tokenizer, self.action_tokenizer, item["task"], self.normalized[row])
         return {

@@ -1,13 +1,11 @@
 """
-Loading OpenVLA for fine-tuning: the checkpoint's processor, the model (or a tiny random-init
-stand-in with the same architecture), and the LoRA adapter on top.
+Loading OpenVLA for fine-tuning: the checkpoint's processor, the model, and the LoRA adapter on top.
 """
 
 from contextlib import contextmanager
 
 import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
-from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.modeling_utils import PreTrainedModel
 
 
@@ -32,38 +30,6 @@ def load_processor(checkpoint):
     return AutoProcessor.from_pretrained(checkpoint, trust_remote_code=True)
 
 
-def build_tiny(checkpoint):
-    """A random-init OpenVLA with tiny ViTs and a 2-layer Llama, built from the checkpoint's own model code
-    and config so the tokenizer, processor, prompt and action tokens are exactly the real ones."""
-    OpenVLAConfig = get_class_from_dynamic_module("configuration_prismatic.OpenVLAConfig", checkpoint)
-    OpenVLA = get_class_from_dynamic_module("modeling_prismatic.OpenVLAForActionPrediction", checkpoint)
-    base = OpenVLAConfig.from_pretrained(checkpoint)
-    text = base.text_config
-    config = OpenVLAConfig(
-        vision_backbone_id=base.vision_backbone_id,
-        llm_backbone_id=base.llm_backbone_id,
-        arch_specifier=base.arch_specifier,
-        use_fused_vision_backbone=base.use_fused_vision_backbone,
-        image_resize_strategy=base.image_resize_strategy,
-        text_config={
-            "model_type": text.model_type, "vocab_size": text.vocab_size, "pad_token_id": text.pad_token_id,
-            "max_position_embeddings": text.max_position_embeddings,
-            "hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 2,
-            "num_attention_heads": 4, "num_key_value_heads": 4,
-        },
-        pad_token_id=base.pad_token_id,
-        pad_to_multiple_of=base.pad_to_multiple_of,
-        n_action_bins=base.n_action_bins,
-        norm_stats={},
-    )
-    config.timm_model_ids = ["vit_tiny_patch16_224"] * len(base.timm_model_ids)
-    config.timm_override_act_layers = [None] * len(base.timm_model_ids)
-    # Register the remote classes so save_pretrained copies the model code next to the weights.
-    OpenVLAConfig.register_for_auto_class()
-    OpenVLA.register_for_auto_class("AutoModelForVision2Seq")
-    return OpenVLA(config)
-
-
 @contextmanager
 def _allow_quantized_to():
     """Let accelerate move a 4-bit model during loading.
@@ -86,9 +52,7 @@ def _allow_quantized_to():
 def load_base(model_cfg, device, dtype):
     """The model to fine-tune, on `device`, before LoRA."""
     checkpoint = model_cfg["checkpoint"]
-    if model_cfg["tiny"]:
-        model = build_tiny(checkpoint).to(device=device, dtype=dtype)
-    elif model_cfg["load_in_4bit"]:
+    if model_cfg["load_in_4bit"]:
         if device.type != "cuda":
             raise SystemExit("model.load_in_4bit needs a CUDA device (bitsandbytes)")
         from peft import prepare_model_for_kbit_training

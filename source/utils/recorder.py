@@ -341,6 +341,15 @@ class Recorder:
         act = {
             "tcp_pose": ("action", tcp),
             "tcp_pose_delta": ("action.tcp_pose_delta", tcp_d),
+            # The plan's gripper decision, 0 or 1, beside the interpolated command in `action`.
+            # OpenVLA treats the gripper as a binary action and its evaluations binarize it; a
+            # policy trained on the ramped command emitted the ramp's early value and never closed.
+            "gripper_target": ("action.gripper_target", ["gripper"]),
+            # The undisturbed pursuit rate toward the plan's next waypoint and goal orientation:
+            # m/s in table coords, then rad/s as a rotation vector in the tool frame (engine
+            # 0.6.0). With the disturbance on, `action` is where the tool was actually sent; this
+            # is where the plan wanted it to go from there, the label.
+            "clean_rate": ("action.clean_rate", ["vx", "vy", "vz", "wx", "wy", "wz"]),
             "joint_pos": ("action.joint_pos", J),
             "joint_pos_delta": ("action.joint_pos_delta", [f"d{j}" for j in J]),
             "joint_vel": ("action.joint_vel", [f"v{j}" for j in J]),
@@ -379,8 +388,21 @@ class Recorder:
         # still. The first session kept them and training had to cut the first 27 frames of every
         # episode (train/config/openvla.py data.frames); recording them out is the same cut at the
         # source, with nothing to re-derive when the plan's timing changes.
+        # Moves marked record=False (the randomized start move, engine 0.6.0) are skipped as well.
+        recorded = lambda a: a["type"] == "ik" and a.get("record", True)
         self.first_move = np.array([
-            next((k for k, a in enumerate(plan) if a["type"] == "ik"), 0) for plan in runner.plans
+            next((k for k, a in enumerate(plan) if recorded(a)), 0) for plan in runner.plans
+        ], dtype=int)
+        # Nor are frames after the last task-space move. The plan ends with a joint-space return
+        # home, and the episode then runs on until the stack has held still for success.hold_time.
+        # The recorded action is the commanded tool pose, which a joint-space move does not update,
+        # so every one of those frames carried a zero action: first under an image of the arm
+        # visibly moving home, then under an unchanging image of the finished stack. Measured on
+        # the 0.4.0 and 0.5.0 sessions that was 22% of all frames (62-182 per episode), the idle
+        # data OpenVLA's authors warn about. The success check still runs to the end; only the
+        # writing stops.
+        self.last_move = np.array([
+            max((k for k, a in enumerate(plan) if recorded(a)), default=len(plan)) for plan in runner.plans
         ], dtype=int)
 
     def _push(self, i, frame, next_obs_rows=None):
@@ -421,8 +443,15 @@ class Recorder:
     # ---- capture ----
 
     def hook(self, runner):
-        """PlanRunner hook: runs after the command for this step is issued, before the sim steps."""
-        if runner.step_count % self.every == 0 and self.active.any():
+        """PlanRunner hook: runs after the command for this step is issued, before the sim steps.
+
+        A frame is captured on the last of its `every` sim steps, not the first. Moves last a
+        whole number of frames (PlanRunner.frame_steps), so the last frame of a move then carries
+        the command exactly at the move's goal and the next frame's command is a full frame into
+        the next move. Captured on the first sub-step, a frame's command sat one sub-step into the
+        move and the frame that crossed a grasp or release reversal recorded two sub-steps down
+        and one up, a 2 mm label between 5 mm neighbours (measured, engine 0.6.0 trials)."""
+        if runner.step_count % self.every == self.every - 1 and self.active.any():
             self.capture(runner)
 
     def _to_table(self, pos_world):
@@ -480,6 +509,8 @@ class Recorder:
         quat_cmd = continuous(runner.quat_cmd, self.prev_quat_cmd)
         grip_cmd = self._gripper_opening(tq)
         rows["action"] = np.concatenate([tcp_cmd, quat_cmd, grip_cmd], axis=1)
+        rows["action.gripper_target"] = np.round(self._gripper_opening(np.asarray(runner.goal_q, dtype=float)))
+        rows["action.clean_rate"] = np.asarray(runner.clean_rate, dtype=float)
         rows["action.tcp_pose_delta"] = np.concatenate(
             [pose_delta(o["tcp_pos"], o["tcp_quat"], tcp_cmd, quat_cmd), grip_cmd - o["grip"]], axis=1)
         rows["action.joint_pos"] = tq
@@ -491,6 +522,13 @@ class Recorder:
         images = {cam: tensor_to_array(self.cameras[cam].read().rgb) for cam in self.cam_names}   # (n, H, W, 3)
 
         for i in np.flatnonzero(self.active & (runner.action_idx >= self.first_move)):
+            if runner.action_idx[i] > self.last_move[i]:
+                # Past the last move: complete the final frame's look-ahead from this step's
+                # observation, then write nothing more for this env.
+                if self.pending[i] is not None:
+                    self._push(i, self.pending[i], next_obs_rows=rows)
+                    self.pending[i] = None
+                continue
             frame = {name: rows[name][i] for name in self.numeric if name not in self.lookahead}
             frame["success"] = np.array([1.0], dtype=np.float32)
             frame["task"] = self.instructions[i]

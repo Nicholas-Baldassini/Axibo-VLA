@@ -4,23 +4,31 @@ Fine-tuning OpenVLA on sessions recorded by the data engine in `source/`.
 
 ```
 train/
-├── config/            one config per run type; openvla.py is the real run, smoke.py a laptop-sized pipeline test
+├── config/            one config per run type: openvla.py the base settings (12 GB card, 4-bit), openvla_80gb.py
+│                      and openvla_5090.py the bf16 runs for those cards
 ├── checkpoints/       downloaded base models (not committed)
 ├── runs/              one directory per training run (not committed)
+├── evals/             one folder per evaluation: protocol, seeds, per-rollout records, summary, videos
 ├── download.py        one command for a new machine: base checkpoint, a run, a session, from Hugging Face
 ├── upload.py          a run to Hugging Face, as a version beside earlier ones (sessions: source/upload.py)
+├── upload_watch.sh    on a rented machine: upload every Nth checkpoint while training, prune the rest
 ├── infer.py           the policy in the simulator, from a small GUI
+├── evaluate.py        the evaluation protocol: per-pair success over fixed layouts, taxonomy, videos
 ├── finetune.py        the training loop
 ├── data.py            LeRobot session -> (image, instruction, action tokens) samples
+├── observe.py         the policy image: cameras tiled into one frame, augmentation, centre crop
 ├── actions.py         action vector from the recorded columns, normalization, action tokens
-└── model.py           model loading, tiny stand-in, LoRA
+└── model.py           model loading (bf16 or 4-bit) and LoRA
 ```
 
 ```
-python train/download.py                   # the base checkpoint, once
-python train/finetune.py --config smoke    # pipeline test, runs on a laptop in a minute
-python train/finetune.py --config openvla  # the real fine-tune, on the GPU machine
+python train/download.py                                 # the base checkpoint, once
+python train/finetune.py --config openvla_80gb           # the fine-tune, on an 80 GB card (openvla_5090 on a 5090)
+python train/evaluate.py train/runs/<run>/step_010000    # the evaluation suite, bf16 on a card that runs Madrona
+python train/infer.py train/runs/<run>/step_010000       # the policy in the simulator, interactively
 ```
+
+Evaluation needs the Madrona renderer, which works on RTX 5090 hosts and not on the H100 hosts tried; `--trials`, `--horizon` and `--start-yaw` set the protocol, and every evaluation writes its folder under `train/evals/`.
 
 ## Moving between machines
 
@@ -62,11 +70,8 @@ every pretraining dataset), the tokenizer, the image processor config, and three
 model. Those files are why `transformers`, `tokenizers` and `timm` are pinned in `requirements.txt`
 to the versions the checkpoint was written for; the model refuses newer `timm` outright.
 
-On the Mac only the small files (about 2.5 MB, everything except the weight shards) were fetched,
-because the disk had 16 GB free. The script checks free space before downloading and refuses without
-a 5 GB margin; rerun it on the Linux machine, or after clearing space, and it fetches only the shards.
-The small files are enough for the smoke config: it builds a random-init miniature of the same
-architecture from the checkpoint's own model code, tokenizer and processor.
+The script checks free space before downloading and refuses without a 5 GB margin; rerun it after
+clearing space and it fetches only what is missing.
 
 ## Why LoRA
 

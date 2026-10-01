@@ -1,8 +1,8 @@
 """
 Fine-tune OpenVLA on a recorded session with LoRA.
 
-    python train/finetune.py --config openvla     the run described by train/config/openvla.py
-    python train/finetune.py --config smoke       pipeline test with a tiny random model (runs on a laptop)
+    python train/finetune.py --config openvla       the run described by train/config/openvla.py (12 GB card, 4-bit)
+    python train/finetune.py --config openvla_80gb  the same in bf16 on an 80 GB card (openvla_5090 for a 5090)
 
 The loop follows OpenVLA's own vla-scripts/finetune.py: next-token loss on the action tokens, and the
 action token accuracy and L1 error logged alongside it. Data comes straight from the LeRobot session
@@ -39,6 +39,7 @@ sys.path.insert(0, str(TRAIN_DIR))
 from actions import ActionTokenizer                                    # noqa: E402
 from config import load_config                                         # noqa: E402
 from data import OpenVLASamples, collate                               # noqa: E402
+import observe                                                         # noqa: E402
 from model import add_lora, count_parameters, load_base, load_processor, resolve_device, resolve_dtype  # noqa: E402
 
 
@@ -125,7 +126,7 @@ def main(config_name):
     stats = data.stats
     h, w = data.image_shape[:2]
     print(f"session: {data.session}  (dataset {data.repo_id}, engine version {data.metadata.get('project_version', '?')})")
-    print(f"  {data.n_episodes} episodes, {len(data)} frames at {data.fps} fps; image {data.image_key} {w}x{h} -> 224x224")
+    print(f"  {data.n_episodes} episodes, {len(data)} frames at {data.fps} fps; image {observe.describe(data.view)}: canvas {w}x{h} -> 224x224")
     stride = config["action"]["stride"]
     print(f"  action ({len(data.action_names)}): {' '.join(data.action_names)}; stride {stride} frames = {data.fps / stride:.1f} Hz")
     for key in ("q01", "q99"):
@@ -141,7 +142,7 @@ def main(config_name):
     base.config.norm_stats = base.norm_stats
     model = add_lora(base, config["lora"])
     total, trainable = count_parameters(model)
-    kind = "tiny random init" if model_cfg["tiny"] else ("4-bit" if model_cfg["load_in_4bit"] else str(dtype).split(".")[-1])
+    kind = "4-bit" if model_cfg["load_in_4bit"] else str(dtype).split(".")[-1]
     print(f"model: {Path(model_cfg['checkpoint']).name} ({kind}) on {device}; {total / 1e6:.1f}M parameters, "
           f"{trainable / 1e6:.2f}M trainable (LoRA rank {config['lora']['rank']}); {n_patches} image patches")
 
@@ -217,6 +218,13 @@ def main(config_name):
                 skipped += 1
             optimizer.zero_grad(set_to_none=True)
             step += 1
+            # OpenVLA-OFT's LIBERO schedule: constant lr, then one step down by 10x for the last
+            # part of the run (5e-4 -> 5e-5 after 100k of 150k steps). optim.decay_after = 0 or
+            # absent keeps the constant lr every run before 2026-09-29 used.
+            if optim_cfg.get("decay_after") and step == optim_cfg["decay_after"]:
+                for group in optimizer.param_groups:
+                    group["lr"] = optim_cfg["lr"] * optim_cfg.get("decay_factor", 0.1)
+                print(f"step {step}: lr -> {optimizer.param_groups[0]['lr']:.1e}")
 
             if step % log_every == 0 or step == max_steps:
                 now = time.time()

@@ -85,8 +85,8 @@ def _fetch(repo, repo_type, version, files, dest, rel, ignore=()):
     total = sum(f.size or 0 for f in files)
     present = sum((dest / rel(f)).stat().st_size for f in files if (dest / rel(f)).exists())
     print(f"  {total / 1e9:.2f} GB in {len(files)} files, {present / 1e9:.2f} GB already in {dest}")
-    _check_space(dest, total - present)
     dest.mkdir(parents=True, exist_ok=True)
+    _check_space(dest, total - present)
     if version:
         tmp = Path(snapshot_download(repo, repo_type=repo_type, allow_patterns=[f"{version}/*"]))
         for f in files:

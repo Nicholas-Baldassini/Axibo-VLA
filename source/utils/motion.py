@@ -3,9 +3,8 @@ Motion plans: an ordered list of duration-based actions, one plan per environmen
 
 Actions (build them with the helpers below and put the list in config["plan"]):
     home(duration)                  joint-space move to control.home_qpos
-    idle(duration)                  hold the current target
-    gripper(open, duration)         open=1.0 fully open, 0.0 closed
-    ik(target, duration, ...)       task-space move of the tool center point (TCP) to `target`
+    ik(target, speed, ...)          task-space move of the tool center point (TCP) to `target`,
+                                    optionally setting the gripper on its first step
 
 Targets
     A target is either an (x, y, z) tuple in table coords, or a reference to an object:
@@ -20,29 +19,47 @@ Targets
     positions in `scene`; env_config calls it last, after any randomization.
 
 ik options:
-    path      "line"    straight segments through start, via points, goal (default)
-              "spline"  natural cubic spline through start, via points, goal
-              "arc"     spline through start, a via point raised `lift` above the higher end, goal
-    via       list of extra targets between start and goal
-    profile   "minjerk" (default), "smoothstep", or "trapezoid"
-    v_max, a_max   speed and acceleration limits for "trapezoid"; duration then becomes a lower
-                   bound and may be omitted, the move takes as long as the limits require
+    speed     m/s toward the next waypoint, constant from the first step to the last: the tool
+              moves at this speed the whole way and the next action starts on the following step
+    via       list of extra targets between start and goal; the path is straight segments
     quat      goal orientation (w, x, y, z), defaults to ik.target_quat; orientation is slerped
-    gripper   optional 0..1 gripper opening applied during the move
+    gripper   optional 0..1 gripper opening, set in full on the move's first step
+    noise     m, standard deviation of the disturbance injected into the executed command during
+              this move (0 = none); see PlanRunner
+    record    False marks a move the recorder must not store (the randomized start move)
 
 pick_and_place(pick, place) builds a whole grasp sequence from two targets.
 
-Every duration is in seconds of sim time. A path P(s) is arc-length parametrized on s in [0, 1]
-and a profile gives s as a function of normalized time, so geometry and timing are independent.
-PlanRunner steps all envs together; each env follows its own plan, so plans may differ in
-content and length between envs. An env that has finished simply holds its last target.
+Moves are executed by pursuit, not by a precomputed schedule: at every sim step the command
+moves from wherever it is toward the current waypoint at the move's speed, so a command that has
+been pushed off the path heads back to the path's next waypoint. That is what makes the
+disturbance useful. With `noise`, a smooth random push (an offset that glides at a bounded rate
+toward a new random target every half second) is added to the executed command, the arm follows
+the disturbed command, and the recorded label is the clean pursuit rate from the disturbed
+position toward the waypoint (the idea of DART, Laskey et al. 2017): the demonstrations then
+contain states off the nominal path, at every height and offset, each labelled with the move
+that returns to the target. Measured on run 9, a policy trained on undisturbed straight paths
+reproduced them to 0.3 mm open loop but could not recover from its own 1-3 cm deviations,
+because no demonstration frame had ever shown one.
+
+Engine 0.6.0 (2026-09-29) removed the arc and spline paths and the min-jerk, smoothstep and
+trapezoid timing profiles. Every move is now straight segments at one constant speed, so every
+recorded step of a move has the same size and no move eases into or out of a target. The
+trapezoid's deceleration into the place point (carry acceleration 0.3 m/s^2) produced 12 frames of
+shrinking actions, 12 -> 2 mm per step, before the release label; the policy trained on them
+stopped 0.5-0.9 cm above the release height and never opened (task2.md, run 8). Slow stretches
+that physically need care (the last centimetres of a descent, the first of a lift) are separate
+moves at a lower constant speed, still 5 mm per control step, not a ramp toward zero.
+
+Every duration is in seconds of sim time. PlanRunner steps all envs together; each env follows
+its own plan, so plans may differ in content and length between envs. An env that has finished
+simply holds its last target.
 """
 
 from typing import NamedTuple, Optional
 
 import numpy as np
-from scipy.interpolate import CubicSpline
-from scipy.spatial.transform import Rotation, Slerp
+from scipy.spatial.transform import Rotation
 
 from utils.frames import table_to_world, object_center, object_height, grasp_yaw
 from utils.ik import to_numpy, solve_ik, tcp_pos_from_link, quat_mul, yaw_quat
@@ -138,105 +155,99 @@ def home(duration):
     return {"type": "home", "duration": float(duration)}
 
 
-def idle(duration):
-    return {"type": "idle", "duration": float(duration)}
-
-
-def gripper(open, duration):
-    return {"type": "gripper", "open": float(open), "duration": float(duration)}
-
-
-def ik(target, duration=None, via=None, path="line", profile="minjerk", v_max=None, a_max=None,
-       lift=0.10, quat=None, gripper=None):
+def ik(target, speed, via=None, quat=None, gripper=None, noise=0.0, yaw_noise_deg=0.0, record=True):
+    """Move the TCP to `target` through `via` in straight segments at a constant `speed` (m/s),
+    turning toward `quat` on the way, with pushes of half-width `noise` (m) on the executed
+    position and `yaw_noise_deg` on the executed wrist yaw."""
     if not isinstance(target, Target):
         target = tuple(float(v) for v in target)
         if len(target) != 3:
             raise ValueError(f"target must be (x, y, z) or a Target, got {target!r}")
-    if path not in PATHS:
-        raise ValueError(f"unknown path {path!r}, expected one of {sorted(PATHS)}")
-    if profile not in PROFILES:
-        raise ValueError(f"unknown profile {profile!r}, expected one of {sorted(PROFILES)}")
-    if profile == "trapezoid" and (v_max is None or a_max is None):
-        raise ValueError("profile='trapezoid' needs v_max and a_max")
-    if profile != "trapezoid" and duration is None:
-        raise ValueError(f"profile={profile!r} needs a duration")
+    if not speed or speed <= 0:
+        raise ValueError(f"ik needs a positive speed in m/s, got {speed!r}")
     return {
         "type": "ik",
         "target": target,
-        "duration": None if duration is None else float(duration),
+        "speed": float(speed),
         "via": [p if isinstance(p, Target) else tuple(float(v) for v in p) for p in (via or [])],
-        "path": path,
-        "profile": profile,
-        "v_max": v_max,
-        "a_max": a_max,
-        "lift": float(lift),
         "quat": quat,
         "gripper": gripper,
+        "noise": float(noise or 0.0),
+        "yaw_noise_deg": float(yaw_noise_deg or 0.0),
+        "record": bool(record),
     }
 
 
-def pick_and_place(pick, place, hover=0.10, lift=0.10, open=1.0, closed=0.0, approach_time=1.5, descend_time=1.0,
-                   grip_time=0.5, transfer_time=2.0, retreat_time=1.0, profile="minjerk", quat=None,
-                   pick_offset=(0.0, 0.0), place_offset=(0.0, 0.0), v_max=None, a_max=None):
+NOISE_PHASES = ("transit", "descent", "final", "lift", "retreat")
+
+
+def pick_and_place(pick, place, hover=0.10, open=1.0, closed=0.0, quat=None,
+                   pick_offset=(0.0, 0.0), place_offset=(0.0, 0.0),
+                   speed=0.15, slow=0.05, final=0.03, lift=0.02, noise=None, yaw_noise=None):
     """Grasp at `pick` and release at `place`. Both are targets for the TCP, e.g. pick=RedCylinder().
 
-    The approach is one continuous move: an arc raised `lift` over the way to a hover point above
-    `pick`, then on down to `pick`, so the tool never comes to rest above the object. The same
-    holds for the carry: one move from the grasp up to hover, over an arc to a hover point above
-    `place`, and down to `place`. Only the grasp and the release are stationary.
+    Eight moves, every one at a constant speed, each starting on the step after the previous,
+    with the disturbance level of `noise` (m, by phase name) applied to the executed command:
+        1. to a hover point above `pick`                          speed   transit
+        2. diagonally down to `final` above `pick`                speed   descent
+        3. straight down onto `pick`                              slow    final
+        4. close, and straight up by `lift` while the fingers close  slow  lift
+        5. up to hover height, across to a hover point above `place`  speed  transit
+        6. diagonally down to `final` above `place`               speed   descent
+        7. straight down onto `place`                             slow    final
+        8. open, and straight up to hover height                  speed   retreat
 
-    pick_offset and place_offset shift the two hover points sideways, in metres. With an offset the
-    last stretch of the descent is a diagonal that closes the gap to the object, so a demonstration
-    shows the tool correcting toward its target from wherever the hover happened to be. With the
-    default (0, 0) every descent is vertical and every demonstration reaches the object from the
-    same relative spot, which leaves a learned policy nothing to imitate once it is off by a
-    centimetre; that is what the first two policies trained on this plan did.
+    The gripper commands are part of the move that follows them: the runner sets the finger
+    target on the move's first step, so the tool never spends a frame standing still. The slow
+    moves exist for the physics, not for the labels: the fingers stop 0.5 cm above the table at
+    the grasp, and the object must not be yanked while the fingers are still closing. At `slow`
+    0.05 m/s they still command 5 mm per 10 Hz control step, and nothing anywhere in the plan
+    commands less. Every move ends at full speed, so the frame whose gripper label flips is
+    preceded by moving frames, never by a standstill (the trapezoid's deceleration into the place
+    is what run 8's policy stalled on).
 
-    profile "trapezoid" with v_max / a_max moves at one cruise speed with short ramps, and the
-    *_time arguments become lower bounds. With "minjerk" a single bell-shaped profile spans each
-    whole move, so the tool is fastest halfway and creeps into the grasp, and it leaves the start
-    so gently that the first control steps of a recording are labelled with under a millimetre.
+    pick_offset and place_offset shift the two hover points sideways, in metres, so every descent
+    starts with a visible gap to close. The disturbance (see the module docstring) puts the tool
+    off the path at every height as well, with the label pointing back; the phases where the
+    fingers are around an object ("final", "lift") should carry little or none, since the pursuit
+    of a disturbance-free move removes whatever offset was inherited within a few frames.
     """
+    noise = dict.fromkeys(NOISE_PHASES, 0.0) | dict(noise or {})
+    yaw = dict.fromkeys(NOISE_PHASES, 0.0) | dict(yaw_noise or {})
     up = (0.0, 0.0, hover)
+    above = (0.0, 0.0, final)
     pick_hover = offset(pick, (pick_offset[0], pick_offset[1], hover))
     place_hover = offset(place, (place_offset[0], place_offset[1], hover))
-    # The sideways correction is finished by `final` above the target, and the last stretch is
-    # vertical, so the fingers come straight down onto the object rather than sweeping in at an angle.
-    final = (0.0, 0.0, 0.03)
-    move = dict(profile=profile, quat=quat, v_max=v_max, a_max=a_max)
+    move = lambda target, spd, phase, **kw: ik(target, spd, quat=quat, noise=noise[phase], yaw_noise_deg=yaw[phase], **kw)
     return [
-        # arc: lifted over the way from wherever the tool starts to the hover point, then through
-        # the low point and down. The spline passes every via point without stopping.
-        ik(pick, approach_time + descend_time, path="arc", lift=lift,
-           via=[pick_hover, offset(pick, final)], gripper=open, **move),
-        gripper(closed, grip_time),
-        # spline: straight up out of the grasp, across to the hover above the destination, and
-        # down. A natural spline through these points arches above hover height between the two
-        # hovers, which is the clearance the old arc provided.
-        ik(place, retreat_time + transfer_time + descend_time, path="spline",
-           via=[offset(pick, up), place_hover, offset(place, final)], **move),
-        gripper(open, grip_time),
-        ik(offset(place, up), retreat_time, path="line", **move),
+        move(pick_hover, speed, "transit", gripper=open),
+        move(offset(pick, above), speed, "descent"),
+        move(pick, slow, "final"),
+        move(offset(pick, (0.0, 0.0, lift)), slow, "lift", gripper=closed),
+        move(place_hover, speed, "transit", via=[offset(pick, up)]),
+        move(offset(place, above), speed, "descent"),
+        move(place, slow, "final"),
+        move(offset(place, up), speed, "retreat", gripper=open),
     ]
 
 
 def describe(action):
     kind = action["type"]
     if kind == "ik":
-        parts = [f"ik -> {describe_target(action['target'])}", action["path"], action["profile"]]
+        parts = [f"ik -> {describe_target(action['target'])}", f"{action['speed']:.2f} m/s"]
         if action["via"]:
             parts.append(f"via {len(action['via'])}")
         if action["quat"] is not None:
             parts.append(f"quat={tuple(round(v, 3) for v in action['quat'])}")
         if action["gripper"] is not None:
             parts.append(f"gripper={action['gripper']:.2f}")
-        if action["duration"] is not None:
-            parts.append(f"over {action['duration']:.2f}s")
-        else:
-            parts.append(f"v_max={action['v_max']} a_max={action['a_max']}")
+        if action.get("noise"):
+            parts.append(f"noise={100 * action['noise']:.1f}cm")
+        if action.get("yaw_noise_deg"):
+            parts.append(f"yaw_noise={action['yaw_noise_deg']:.0f}deg")
+        if not action.get("record", True):
+            parts.append("unrecorded")
         return " ".join(parts)
-    if kind == "gripper":
-        return f"gripper open={action['open']:.2f} over {action['duration']:.2f}s"
     return f"{kind} over {action['duration']:.2f}s"
 
 
@@ -254,108 +265,20 @@ def _constant_path(goal):
     return (lambda s: goal.copy()), 0.0
 
 
-def line_path(start, goal, via=(), **_):
-    pts = _dedupe(np.asarray([start, *via, goal], dtype=float))
-    if len(pts) < 2:
-        return _constant_path(goal)
-    cum = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
-    length = cum[-1]
-
-    def P(s):
-        d = s * length
-        return np.array([np.interp(d, cum, pts[:, k]) for k in range(3)])
-
-    return P, length
 
 
-def spline_path(start, goal, via=(), samples=400, **_):
-    pts = _dedupe(np.asarray([start, *via, goal], dtype=float))
-    if len(pts) < 3:
-        return line_path(start, goal, via)
-    u = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
-    spline = CubicSpline(u, pts, bc_type="natural")
-    uu = np.linspace(0.0, u[-1], samples)
-    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(spline(uu), axis=0), axis=1))])
-    length = arc[-1]
-
-    def P(s):
-        return spline(np.interp(s * length, arc, uu))
-
-    return P, length
+def rotvec_between(q_from, q_to):
+    """Rotation vector, in q_from's own frame, that turns (w, x, y, z) quaternion q_from into q_to:
+    the quantity train/actions.py records as a rotation label and train/infer.py applies by
+    right-multiplying the current command."""
+    r_from = Rotation.from_quat(np.asarray(q_from, dtype=float)[[1, 2, 3, 0]])   # scipy wants (x, y, z, w)
+    r_to = Rotation.from_quat(np.asarray(q_to, dtype=float)[[1, 2, 3, 0]])
+    return (r_from.inv() * r_to).as_rotvec()
 
 
-def arc_path(start, goal, via=(), lift=0.10, **_):
-    """Spline through start, a point raised `lift` above the higher end of the first leg, then any
-    via points, then goal. With no via the first leg is start->goal, the original arc; with via
-    points it is start->via[0], so the lift clears the way to the first waypoint and the rest of
-    the path continues smoothly through the remaining points without stopping at any of them."""
-    start, goal = np.asarray(start, dtype=float), np.asarray(goal, dtype=float)
-    via = [np.asarray(p, dtype=float) for p in via]
-    first = via[0] if via else goal
-    mid = (start + first) / 2
-    mid[2] = max(start[2], first[2]) + lift
-    return spline_path(start, goal, [mid, *via])
-
-
-PATHS = {"line": line_path, "spline": spline_path, "arc": arc_path}
-
-
-# --------------------------------- profiles ---------------------------------
-# A profile maps normalized time tau in [0, 1] to path progress s in [0, 1].
-
-def smoothstep(tau):
-    tau = np.clip(tau, 0.0, 1.0)
-    return tau * tau * (3.0 - 2.0 * tau)
-
-
-def minjerk(tau):
-    tau = np.clip(tau, 0.0, 1.0)
-    return tau ** 3 * (10.0 - 15.0 * tau + 6.0 * tau * tau)
-
-
-def trapezoid(length, v_max, a_max, duration=None):
-    """Trapezoidal (or triangular) velocity profile. Returns (s_of_tau, actual_duration)."""
-    if length < 1e-9:
-        return smoothstep, (duration or 0.0)
-    if length >= v_max * v_max / a_max:
-        t_min = length / v_max + v_max / a_max          # reaches cruise speed
-    else:
-        t_min = 2.0 * np.sqrt(length / a_max)           # triangular
-    T = max(t_min, duration or 0.0)
-    # Cruise speed v that covers `length` in time T with accel a_max: length = v * (T - v / a_max).
-    disc = max(T * T - 4.0 * length / a_max, 0.0)
-    v = (T - np.sqrt(disc)) * a_max / 2.0
-    f = min((v / a_max) / T, 0.5)                       # fraction of T spent accelerating
-    vn = 1.0 / (1.0 - f)                                # normalized cruise speed
-
-    def s_of_tau(tau):
-        tau = np.clip(tau, 0.0, 1.0)
-        if tau < f:
-            return vn * tau * tau / (2.0 * f)
-        if tau <= 1.0 - f:
-            return vn * (tau - f / 2.0)
-        return 1.0 - vn * (1.0 - tau) ** 2 / (2.0 * f)
-
-    return s_of_tau, T
-
-
-def make_profile(action, length):
-    """Return (s_of_tau, duration) for an ik action once its path length is known."""
-    if action["profile"] == "trapezoid":
-        return trapezoid(length, action["v_max"], action["a_max"], action["duration"])
-    return PROFILES[action["profile"]], action["duration"]
-
-
-PROFILES = {"smoothstep": smoothstep, "minjerk": minjerk, "trapezoid": trapezoid}
-
-
-def quat_slerp(q0, q1, s):
-    """Interpolate (w, x, y, z) quaternions."""
-    q0, q1 = np.asarray(q0, dtype=float), np.asarray(q1, dtype=float)
-    if np.allclose(q0, q1) or np.allclose(q0, -q1):
-        return q1.copy()
-    rots = Rotation.from_quat([q0[[1, 2, 3, 0]], q1[[1, 2, 3, 0]]])   # scipy wants (x, y, z, w)
-    q = Slerp([0.0, 1.0], rots)(float(np.clip(s, 0.0, 1.0))).as_quat()
+def rotvec_quat(rotvec):
+    """(w, x, y, z) quaternion of a rotation vector."""
+    q = Rotation.from_rotvec(np.asarray(rotvec, dtype=float)).as_quat()
     return q[[3, 0, 1, 2]]
 
 
@@ -371,6 +294,22 @@ class PlanRunner:
         self.env_configs = env_configs
         self.ik_cfg = config["ik"]
         self.dt = config["sim"]["dt"]
+        # Disturbance settings (config randomization.path_noise): how often a new push target is
+        # drawn, how fast the offset moves toward it, and how much of it goes into z relative to
+        # x and y. Each env draws from its own generator seeded by env_config, so a recording is
+        # reproducible.
+        noise_cfg = config.get("randomization", {}).get("path_noise", {})
+        self.noise_interval = float(noise_cfg.get("interval", 0.5))
+        self.noise_rate = float(noise_cfg.get("rate", 0.05))
+        self.noise_axes = np.array([1.0, 1.0, float(noise_cfg.get("z_factor", 0.5))])
+        # The wrist orientation is pursued the same way: turned toward the move's goal orientation
+        # at yaw_speed, and pushed at up to yaw_push_rate toward a random yaw offset.
+        self.yaw_speed = np.deg2rad(float(noise_cfg.get("yaw_speed_deg", 120.0)))
+        self.yaw_push_rate = np.deg2rad(float(noise_cfg.get("yaw_push_rate_deg", 45.0)))
+        self.yaw_settle = float(noise_cfg.get("yaw_settle_s", 0.1))     # one control step at 10 Hz
+        self.rngs = [np.random.default_rng(c.get("noise_seed", 0)) for c in env_configs]
+        self.noise_target = [None] * len(env_configs)
+        self.noise_clock = np.zeros(len(env_configs))
         self.verbose = verbose
         self.hook = hook   # called as hook(runner) each step after the command is issued, before the sim steps
 
@@ -394,13 +333,24 @@ class PlanRunner:
         self.quat_cmd = to_numpy(ee_link.get_quat()).astype(float).copy()
         self.start_quat = self.quat_cmd.copy()
         self.goal_quat = self.quat_cmd.copy()
-        self.path_fn = [None] * self.n
-        self.profile_fn = [None] * self.n
+        # Pursuit state of the current task-space move, per env.
+        self.waypoints = [[] for _ in range(self.n)]  # world points still to visit, in order
+        self.speed = np.zeros(self.n)
+        self.sigma = np.zeros(self.n)                  # push half-width of the current move, m
+        self.yaw_sigma = np.zeros(self.n)              # push half-width on the wrist yaw, rad
+        self.noise = np.zeros((self.n, 3))             # the current push offset in the executed command
+        self.yaw_noise = np.zeros(self.n)              # the current push offset in the executed yaw, rad
+        self.yaw_target = np.zeros(self.n)
+        # The undisturbed pursuit rates this step, the label: m/s in table coords (x, y, z) and
+        # rad/s as a rotation vector in the tool frame (the frame train/infer.py applies it in).
+        self.clean_rate = np.zeros((self.n, 6))
+        self.finish = np.zeros(self.n, dtype=bool)     # the move reached its last waypoint this step
 
         self.action_idx = np.zeros(self.n, dtype=int)
         self.t = np.zeros(self.n, dtype=int)          # steps elapsed in the current action
-        self.steps = np.ones(self.n, dtype=int)       # steps the current action lasts
+        self.steps = np.ones(self.n, dtype=int)       # steps the current action lasts (joint-space moves)
         self.in_ik = np.zeros(self.n, dtype=bool)
+        self.cmd_current = np.zeros(self.n, dtype=bool)   # tcp_cmd reflects the arm's latest task-space target
         self.done = np.zeros(self.n, dtype=bool)
 
         for i in range(self.n):
@@ -438,7 +388,7 @@ class PlanRunner:
         action = plan[self.action_idx[i]]
         kind = action["type"]
         cfg = self.env_configs[i]
-        duration = action["duration"]
+        duration = action.get("duration")
         self.t[i] = 0
         self.start_q[i] = self.target_q[i]
         self.goal_q[i] = self.target_q[i]
@@ -446,23 +396,40 @@ class PlanRunner:
 
         if kind == "home":
             self.goal_q[i] = cfg["control"]["home_qpos"]
-        elif kind == "idle":
-            pass
-        elif kind == "gripper":
-            self.goal_q[i, self.grip_cols] = self._gripper_qpos(i, action["open"])
+            self.cmd_current[i] = False       # a joint-space move leaves tcp_cmd behind
         elif kind == "ik":
             self.in_ik[i] = True
             scene_cfg = cfg["scene"]
-            start = tcp_pos_from_link(self.ee_link, self.ik_cfg["tcp_offset"])[i]
+            # A move continues from the last commanded tool pose, not from where the arm is: under
+            # PD control the arm trails the command by up to a centimetre at speed, and starting
+            # the next segment from the arm would step the command backwards by that lag at every
+            # move boundary. Only after a joint-space move (home) is the command stale, and then
+            # the arm's actual pose is the start.
+            if self.cmd_current[i]:
+                start = self.tcp_cmd[i].copy()
+            else:
+                start = tcp_pos_from_link(self.ee_link, self.ik_cfg["tcp_offset"])[i]
+                self.tcp_cmd[i] = start
+                self.noise[i] = 0.0
+                self.cmd_current[i] = True
             goal = np.asarray(table_to_world(cfg, resolve_target(action["target"], scene_cfg)), dtype=float)
             via = [table_to_world(cfg, resolve_target(p, scene_cfg)) for p in action["via"]]
-            self.path_fn[i], length = PATHS[action["path"]](start, goal, via, lift=action["lift"])
-            self.profile_fn[i], duration = make_profile(action, length)
+            pts = _dedupe(np.asarray([start, *via, goal], dtype=float))
+            self.waypoints[i] = [p.copy() for p in pts[1:]] or [goal.copy()]
+            self.speed[i] = action["speed"]
+            self.sigma[i] = action.get("noise", 0.0)
+            self.yaw_sigma[i] = np.deg2rad(action.get("yaw_noise_deg", 0.0))
+            self.finish[i] = False
+            duration = self.dt            # pursuit ends when the last waypoint is reached, not by time
             self.start_quat[i] = self.quat_cmd[i]
             quat = action["quat"] if action["quat"] is not None else cfg["ik"]["target_quat"]
             self.goal_quat[i] = np.asarray(quat, dtype=float)
             if action["gripper"] is not None:
+                # The finger target is set in full on the move's first step, not interpolated over
+                # the move: the recorded gripper label is this target, and it must flip on one
+                # frame while the tool keeps moving.
                 self.goal_q[i, self.grip_cols] = self._gripper_qpos(i, action["gripper"])
+                self.start_q[i, self.grip_cols] = self.goal_q[i, self.grip_cols]
         else:
             raise ValueError(f"env {i}: unknown action type {kind!r}")
 
@@ -470,23 +437,101 @@ class PlanRunner:
         if self.verbose:
             print(f"[{self.time:6.2f}s] env {i}: {describe(action)}")
 
+    def _pursue(self, i):
+        """One sim step of env i's task-space move: the clean pursuit rate from the executed command
+        toward the current waypoint (the label), the clean step along the polyline, and the
+        disturbance increment on top of it. Sets finish when the last waypoint is reached."""
+        x = self.tcp_cmd[i]
+        wps = self.waypoints[i]
+        d = wps[0] - x
+        dist = float(np.linalg.norm(d))
+        self.clean_rate[i, :3] = (d / dist * self.speed[i]) if dist > 1e-9 else 0.0
+        pos = x.copy()
+        budget = self.speed[i] * self.dt
+        while budget > 0.0:
+            d = wps[0] - pos
+            dist = float(np.linalg.norm(d))
+            # A waypoint within the budget (plus rounding) counts as reached on this step; without
+            # the margin a move whose length divides exactly into steps landed a rounding error
+            # short of its goal and spent one extra sub-step with a zero rate (measured).
+            if dist <= budget + 1e-6:
+                pos = wps[0].copy()
+                budget -= dist
+                if len(wps) > 1:
+                    wps.pop(0)
+                else:
+                    self.finish[i] = True
+                    break
+            else:
+                pos = pos + d / dist * budget
+                budget = 0.0
+        # Smooth random pushes: the offset moves at a bounded rate toward a target drawn every
+        # `interval` seconds from a box of half-width sigma (z scaled by z_factor). The arm can
+        # follow a push like that, and a held object stays held, where white or OU noise at the
+        # physics rate shook the command by millimetres every step (measured: 5 of 6 stacks lost).
+        # With sigma 0 the target is the origin, so a move without disturbance sheds the offset it
+        # inherited at the same bounded rate.
+        n = self.noise[i]
+        self.noise_clock[i] += self.dt
+        if self.noise_clock[i] >= self.noise_interval or self.noise_target[i] is None:
+            self.noise_clock[i] = 0.0
+            self.noise_target[i] = self.rngs[i].uniform(-1.0, 1.0, size=3) * self.sigma[i] * self.noise_axes
+        if self.sigma[i] == 0.0:
+            self.noise_target[i] = np.zeros(3)
+        d = self.noise_target[i] - n
+        dist = float(np.linalg.norm(d))
+        step = min(dist, self.noise_rate * self.dt)
+        n_new = n + (d / dist * step if dist > 1e-9 else 0.0)
+        self.tcp_cmd[i] = pos + (n_new - n)
+        self.noise[i] = n_new
+
+        # Orientation, pursued the same way: the clean rate turns the executed orientation toward
+        # the move's goal at yaw_speed (a rotation vector in the tool frame, the label), the
+        # executed orientation takes that turn, and a push offset about the tool's own z axis (the
+        # wrist yaw when the gripper points down) glides toward a random yaw target drawn together
+        # with the position push. Since engine 0.6.0's random start yaw, every recorded approach
+        # contains the turn to the grasp yaw; run 10, whose start move had already aligned the
+        # wrist so the rotation labels were all zero, gripped every cube diagonally and lost 17
+        # of 20 cube placements against 1 of 10 cylinders, and scored 30/30 once the wrist was
+        # aligned for it.
+        q_exec = self.quat_cmd[i]
+        rel = rotvec_between(q_exec, self.goal_quat[i])
+        ang = float(np.linalg.norm(rel))
+        axis = rel / ang if ang > 1e-6 else np.zeros(3)
+        # The rate that reaches the goal within yaw_settle seconds, capped at yaw_speed: far from
+        # the goal a constant turn, within the last degrees a turn that shrinks with the error.
+        # A constant-rate label would have the policy step 12 degrees past a 3 degree error and
+        # oscillate around the grasp yaw; a label proportional to the error converges.
+        rate = min(ang / self.yaw_settle, self.yaw_speed) if ang > 1e-6 else 0.0
+        self.clean_rate[i, 3:] = axis * rate
+        turn = min(ang, rate * self.dt)
+        q_clean = quat_mul(q_exec, rotvec_quat(axis * turn)) if turn > 0.0 else q_exec
+        yn = self.yaw_noise[i]
+        if self.yaw_sigma[i] == 0.0:
+            self.yaw_target[i] = 0.0
+        elif self.noise_clock[i] == 0.0:            # a new push target was drawn this step
+            self.yaw_target[i] = self.rngs[i].uniform(-1.0, 1.0) * self.yaw_sigma[i]
+        yd = self.yaw_target[i] - yn
+        yn_new = yn + float(np.clip(yd, -self.yaw_push_rate * self.dt, self.yaw_push_rate * self.dt))
+        self.quat_cmd[i] = quat_mul(q_clean, rotvec_quat(np.array([0.0, 0.0, yn_new - yn])))
+        self.yaw_noise[i] = yn_new
+
     def step(self):
         """Advance every env by one sim step."""
         tau = np.clip((self.t + 1) / self.steps, 0.0, 1.0)   # normalized time at the end of this step
-        s_joint = smoothstep(tau)
+        s_joint = tau            # joint-space moves (home, gripper) interpolate linearly; none is recorded
         s_joint[self.done] = 1.0
 
         # Joint-space interpolation covers home, gripper, and the gripper part of ik actions.
         self.target_q = self.start_q + (self.goal_q - self.start_q) * s_joint[:, None]
 
-        # Task-space moves: evaluate each env's path and profile, then one batched IK call.
+        # Task-space moves: one pursuit step per env, then one batched IK call.
         if self.in_ik.any():
             for i in np.flatnonzero(self.in_ik):
-                s = self.profile_fn[i](tau[i])
-                self.tcp_cmd[i] = self.path_fn[i](s)
-                self.quat_cmd[i] = quat_slerp(self.start_quat[i], self.goal_quat[i], s)
+                self._pursue(i)
             q = to_numpy(solve_ik(self.robot, self.ee_link, self.tcp_cmd, self.quat_cmd, self.ik_cfg))
             self.target_q[self.in_ik, self.arm_cols] = q[self.in_ik][:, self.arm_dofs]
+        self.clean_rate[~self.in_ik] = 0.0
 
         self.robot.control_dofs_position(self.target_q, self.dofs)
         if self.hook is not None:
@@ -495,7 +540,10 @@ class PlanRunner:
         self.step_count += 1
         self.t += 1
 
-        for i in np.flatnonzero((self.t >= self.steps) & ~self.done):
+        # A joint-space action ends by time; a task-space move ends when its pursuit reached the
+        # last waypoint on this step.
+        ended = np.where(self.in_ik, self.finish, self.t >= self.steps) & ~self.done
+        for i in np.flatnonzero(ended):
             self.action_idx[i] += 1
             self._begin(i)
 

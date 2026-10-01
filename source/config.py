@@ -21,7 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from utils.motion import home, idle, ik, gripper, pick_and_place, Obj, on_top, resolve_plan, grasp_quat
+from utils.motion import home, ik, pick_and_place, Obj, on_top, offset, resolve_plan, grasp_quat
+from utils.ik import quat_mul, yaw_quat
 
 SOURCE_DIR = Path(__file__).resolve().parent
 
@@ -52,13 +53,19 @@ SCENE = {
     },
     # The three task objects. "pos" is (x, y) on the table surface; each rests on it. "yaw" is the
     # rotation about z in degrees. Both are redrawn per episode by env_config.
+    # 5 cm cubes and a 5 cm cylinder since engine 0.6.0 (4 cm through 0.5.1): a cube stays on a
+    # cube until its centre passes the base's edge, so the physical placement tolerance goes from
+    # 2 to 2.5 cm, the fingers tolerate 5 mm more lateral error per side, and the objects cover
+    # 56% more of the 224x224 policy input. The success test's tolerances are unchanged. Cubes
+    # stay cubes (one "size"), and the cylinder keeps the cubes' height so every stack geometry
+    # is the same as before, 5 cm taller objects aside.
     "objects": {
-        "red_cube":     {"shape": "box",      "size": 0.04,                   "color": RED,  "pos": (0.0, -0.12), "yaw": 0.0},
-        "red_cylinder": {"shape": "cylinder", "radius": 0.02, "height": 0.04, "color": RED,  "pos": (0.0,  0.00), "yaw": 0.0},
-        "blue_cube":    {"shape": "box",      "size": 0.04,                   "color": BLUE, "pos": (0.0,  0.12), "yaw": 0.0},
+        "red_cube":     {"shape": "box",      "size": 0.05,                    "color": RED,  "pos": (0.0, -0.12), "yaw": 0.0},
+        "red_cylinder": {"shape": "cylinder", "radius": 0.025, "height": 0.05, "color": RED,  "pos": (0.0,  0.00), "yaw": 0.0},
+        "blue_cube":    {"shape": "box",      "size": 0.05,                    "color": BLUE, "pos": (0.0,  0.12), "yaw": 0.0},
     },
-    "object_density": 1000.0,  # kg/m^3, a 4 cm cube weighs 64 g
-    "object_friction": 1.0,
+    "object_density": 1000.0,  # kg/m^3, a 5 cm cube weighs 125 g
+    "object_friction": 1.2,    # was 1.0 through engine 0.4.0; raised slightly for engine 0.5.0 against sliding on landing
     "spawn_gap": 0.002,        # clearance above the table so nothing spawns interpenetrating
 }
 
@@ -93,13 +100,22 @@ CAMERAS = {
     # x is the camera's depth axis, the direction the first policies drifted along unseen, so the
     # closer, steeper view is what makes that motion visible. An oblique view from the side scored
     # higher still (2.26 / 3.25) but skews the workspace and hides more behind the arm.
+    #   Engine 0.5.0 (2026-09-28): pos (0.40, 0, 0.50), fov 45, aimed at (-0.08, 0, 0.18). Measured
+    #     against the 0.4.0 camera: closer and 45 deg gives 3.71 / 3.90 per 4 cm and ~1987 px per
+    #     cube (1.85x the sensitivity, 2.4x the pixels). The aim point is 18 cm up, not on the
+    #     table: aimed at the table, the narrower lens lost the gripper entirely above 25 cm, so
+    #     the policy could not see its own tool for the upper half of every approach (the 0.4.0
+    #     camera lost it above ~40 cm). The first 0.5.0 session (piper_stack_2026-09-28_12-02-35)
+    #     was recorded with that mistake; the run trained on it missed grasps by 2-7 cm. Aimed at
+    #     18 cm the gripper is in frame from 45 cm down, all four placement-area corners stay in
+    #     frame, and the lower third of the frame is no longer empty table.
     "front": {
         "res": (640, 480),
-        "fov": 60,
+        "fov": 45,
         "near": 0.01,
         "far": 10.0,
-        "pos": (0.45, 0.0, 0.55),
-        "lookat": (-0.08, 0.0, 0.02),
+        "pos": (0.40, 0.0, 0.50),
+        "lookat": (-0.08, 0.0, 0.18),
         "up": (0.0, 0.0, 1.0),
     },
     # Wrist camera: a RealSense D435 color stream at 640x480. The intrinsics below are the nominal
@@ -135,8 +151,15 @@ CONTROL = {
     "kp": np.array([300, 300, 300, 100, 100, 100, 50, 50], dtype=float),          # position gains
     "kv": np.array([30, 30, 30, 10, 10, 10, 5, 5], dtype=float),                   # velocity gains
     "force_limit": np.array([100, 100, 100, 100, 100, 100, 20, 20], dtype=float),  # from the URDF effort limits
-    # Pose held after build: arm raised in front of the robot, gripper open. joint2/joint3 unfold the arm.
-    "home_qpos": np.array([0.0, 1.0, -1.2, 0.0, 0.6, 0.0, 0.04, -0.04]),
+    # Pose held after build and returned to at the end of every plan: gripper pointing down about
+    # 20 cm above the table centre (TCP (-0.08, 0, 0.20)), open, on the same wrist branch the
+    # pick-and-place IK uses (joint4 +90, joint6 -90). Engine 0.5.1: the previous home
+    # [0, 1.0, -1.2, 0, 0.6, 0] held the arm vertical with the TCP 55-60 cm up, above the front
+    # camera's frame, so the first 1-1.5 s of every demonstration showed no gripper at all and the
+    # camera had to keep headroom for a pose that appears nowhere else in the task. Straight-down
+    # IK is only accurate up to about 20 cm this close to the base (2 cm error at 20 cm, 7 cm at
+    # 25 cm, measured), which sets the height.
+    "home_qpos": np.array([0.0, 1.2, -1.18, 1.57, 0.0, -1.57, 0.04, -0.04]),
     # Gripper joint positions (joint7, joint8) for gripper(open=1.0) and gripper(open=0.0).
     "gripper_open_qpos": (0.05, -0.05),
     "gripper_closed_qpos": (0.0, 0.0),
@@ -154,7 +177,7 @@ IK = {
     "env_spacing": (1.5, 1.5),           # viewer-only grid spacing between environments
     "ee_link": "Link6",                  # wrist link the gripper hangs off; the URDF has no tool-center link
     "tcp_offset": (0.0, 0.0, 0.1308),    # center of the finger pads in the ee_link frame, measured
-                                         # from the URDF meshes: python -m utils.gripper
+                                         # measured from the URDF meshes
     "target_pos": (0.0, 0.0, 0.12),      # tool-center target, table coords: 12 cm above the red cylinder
     "target_quat": (0.0, 1.0, 0.0, 0.0),  # (w, x, y, z). Gripper pointing straight down, fingers closing along x.
     "rot_mask": (True, True, True),      # constrain full orientation. (False, False, True) frees the yaw.
@@ -165,7 +188,7 @@ IK = {
 SIM = {
     "dt": 1 / 90,             # 90 Hz physics: an integer multiple of the 30 Hz recording rate
     "n_steps": 2700,          # stacking_scene.py: 30 s of sim time
-    "hold_after_plan": 1.0,   # run_plan.py / record.py: seconds to keep simulating after the last plan finishes
+    "hold_after_plan": 1.0,   # record.py: seconds to keep simulating after the last plan finishes
     # Compute backend: "auto" is Genesis's own pick (CUDA, then AMD, then Metal, then CPU), "cuda"
     # and "cpu" force one. The backend also decides how the cameras render: on CUDA every env and
     # camera goes through the Madrona batch renderer in a single GPU pass, anywhere else each env is
@@ -213,7 +236,10 @@ RANDOMIZATION = {
     # displacements at hover entirely. 0.03 m is about the error those policies made.
     "approach": {
         "randomize": True,
-        "max_offset": 0.03,           # m; (dx, dy) uniform in a square of this half-width
+        # m; (dx, dy) uniform in a square of this half-width. 0.03 in engine 0.3.0 taught
+        # corrections of up to 3 cm; the policy then landed 5-8 cm short on objects at the edge of
+        # the placement area, where its own approach error exceeds what it ever saw corrected.
+        "max_offset": 0.05,
     },
     # Start pose: control.home_qpos with a small per-episode perturbation of the arm joints, so the
     # first frames of the demonstrations are not one identical picture and a policy does not tie
@@ -221,6 +247,39 @@ RANDOMIZATION = {
     "start": {
         "randomize": True,
         "joint_range_deg": 5.0,       # each arm joint: uniform in +-this, degrees
+        # Engine 0.6.0: the plan then moves the tool, unrecorded, to a random point in this box
+        # (table coords, m) before the recorded approach begins, so demonstrations start from
+        # anywhere the policy might find itself rather than from one home pose. The box is inside
+        # the front camera's frame at these heights (coverage measured 2026-09-28) and within the
+        # reach of the straight-down IK (accurate to 2 cm up to about 20 cm near the base).
+        "tool_box": {"x": (-0.15, 0.05), "y": (-0.18, 0.18), "z": (0.12, 0.20)},
+        # The wrist yaw the start move leaves, uniform in +-this about the base orientation
+        # (degrees); the recorded approach then turns to the grasp yaw, which is the turn the
+        # policy has to learn. A cube's grasp yaw is within +-45 deg of the base, so this range
+        # covers every turn the pick can need.
+        "yaw_range_deg": 45.0,
+    },
+    # Disturbance of the executed command during the plan's moves (utils/motion.py, PlanRunner):
+    # smooth random pushes. Every `interval` seconds a new push target is drawn uniformly within
+    # +-sigma (m, per phase; z scaled by z_factor) and the offset glides toward it at `rate` m/s.
+    # The recorded label is the clean pursuit rate back toward the waypoint, so every disturbed
+    # frame teaches a correction. Phases with the fingers around an object carry none; the pursuit
+    # of those moves removes an inherited offset at the same rate (2 cm in 0.4 s).
+    "path_noise": {
+        "enabled": True,
+        "sigma": {"transit": 0.02, "descent": 0.012, "final": 0.0, "lift": 0.0, "retreat": 0.01},
+        "interval": 0.5,
+        "rate": 0.05,
+        "z_factor": 0.5,
+        # The wrist yaw, the same way: the executed yaw is pushed within +-yaw_sigma_deg (per
+        # phase) at up to yaw_push_rate_deg per second, while the clean turn toward the grasp yaw
+        # runs at yaw_speed_deg per second and is the recorded rotation label. Run 10, recorded
+        # with the wrist already aligned before the first frame, never learned to turn it and
+        # gripped every cube diagonally (task2.md).
+        "yaw_sigma_deg": {"transit": 10.0, "descent": 8.0, "final": 0.0, "lift": 0.0, "retreat": 5.0},
+        "yaw_speed_deg": 120.0,
+        "yaw_push_rate_deg": 45.0,
+        "yaw_settle_s": 0.1,     # within the last 12 deg the turn rate shrinks with the error (one 10 Hz step)
     },
     "placement": {
         "randomize": True,            # random object positions on the table each episode
@@ -259,8 +318,9 @@ def instruction(task):
     )
 
 
-def make_plan(task, scene, hover=0.10, pick_offset=(0.0, 0.0), place_offset=(0.0, 0.0)):
-    """Motion plan for `task` on the object layout in `scene`, executed in order by run_plan.py and record.py.
+def make_plan(task, scene, hover=0.10, pick_offset=(0.0, 0.0), place_offset=(0.0, 0.0), start=None, start_yaw=0.0,
+              noise=None, yaw_noise=None):
+    """Motion plan for `task` on the object layout in `scene`, executed in order by record.py.
 
     Targets are object references, resolved to table coords per env by env_config as its last
     step, after any randomization. ik(Obj(name)()) centers the gripper on that object. The gripper
@@ -274,19 +334,35 @@ def make_plan(task, scene, hover=0.10, pick_offset=(0.0, 0.0), place_offset=(0.0
     """
     src, dst = Obj(task["source"]), Obj(task["destination"])
     quat = grasp_quat(scene["objects"][task["source"]], IK["target_quat"])
+    # Grasp 5 mm below the object's centre (engine 0.5.0), a margin against the policy's measured
+    # habit of closing 1.5-2.5 cm above where the demonstrations do; the demonstrations themselves
+    # still grasp exactly where aimed. Scripted plan on 10 layouts: 5 mm low stacks 10/10 even with
+    # the grasp shifted 1 cm sideways; 1 cm above centre stacks 5/10, 2 cm above 0/10. The early
+    # close itself is addressed by the gripper label (train/config/openvla.py, lookahead False).
+    grasp = offset(src(), (0.0, 0.0, -0.005))
+    # The randomized start (randomization.start.tool_box, yaw_range_deg): an unrecorded move from
+    # home to the drawn point with the wrist at the drawn yaw, so the recorded approach begins
+    # there, from the first frame, at speed, and turning toward the grasp yaw.
+    start_quat = tuple(float(v) for v in quat_mul(yaw_quat(start_yaw), np.asarray(IK["target_quat"], dtype=float)))
+    start_move = [ik(start, 0.15, quat=start_quat, gripper=1.0, record=False)] if start is not None else []
     return [
         home(0.5),
-        idle(0.5),
-        # lift keeps the arc apex at hover + 0.02: with the gripper vertical the arm cannot reach much
-        # higher than 0.12 above the table, so a taller arc would sag through an infeasible waypoint.
-        # One cruise speed for every move (trapezoid profile), so the recorded deltas are the same
-        # size along the whole approach and carry instead of peaking mid-path and creeping into
-        # the grasp. 0.3 m/s is under the old min-jerk peak of about 0.7 m/s on the approach and
-        # the PD controller tracks it; 1.5 m/s^2 gives 0.2 s ramps, and the decelerating stretch
-        # before a target is 3 cm, the length of the vertical finish in pick_and_place.
-        *pick_and_place(pick=src(), place=on_top(dst, src, clearance=0.02), hover=hover, lift=0.02, quat=quat,
-                        pick_offset=pick_offset, place_offset=place_offset,
-                        profile="trapezoid", v_max=0.3, a_max=1.5),
+        *start_move,
+        # Engine 0.6.0: eight straight-line moves at two constant speeds (see pick_and_place).
+        # 0.15 m/s everywhere the tool travels, 15 mm per 10 Hz control step, the carry speed of
+        # 0.5.0 (the policy corrects about 25% of its lateral error per step on a descent, so the
+        # slower approach gives the pick descent the same number of correcting steps the place
+        # had); 0.05 m/s, 5 mm per step, for the last 3 cm onto an object and the first 2 cm of
+        # the lift. No ramps: the trapezoid profile of 0.4.0-0.5.1 decelerated into the place
+        # over 12 frames of shrinking actions and the policy trained on it stalled just above the
+        # release height (task2.md, run 8).
+        # The place is a 1.5 cm drop. Scripted, friction 1.2, 10 layouts: at the nominal grasp
+        # 1.0 / 1.5 / 2.0 cm all stack 10/10; grasped 1 cm too high they stack 7 / 8 / 9. A
+        # set-down (3 mm) pushes a high-grasped object into the destination, 0/10, so the drop's
+        # clearance is kept as the margin for the grasp error the policy makes.
+        *pick_and_place(pick=grasp, place=on_top(dst, src, clearance=0.015), hover=hover, quat=quat,
+                        pick_offset=pick_offset, place_offset=place_offset, speed=0.15, slow=0.05,
+                        noise=noise, yaw_noise=yaw_noise),
         home(1.0),   # return home after the retreat; the success check starts when this action begins
     ]
 
@@ -298,7 +374,7 @@ RECORD = {
     # Episodes per env; a session records workers * n_envs * epochs attempts. 40 envs x 15 epochs
     # = 600 attempts, which at the ~97% success rate of this plan lands around 580 saved
     # demonstrations. Failed attempts are discarded, so ask for a few more than you need.
-    "epochs": 25,
+    "epochs": 17,
     # Recorder processes run in parallel, each simulating ik.n_envs envs and merged into one dataset
     # at the end. On a CPU backend camera rendering is single-threaded per process and is the
     # bottleneck, so more envs in one process stop helping around 16 while extra processes scale
@@ -333,6 +409,8 @@ RECORD = {
     },
     "action": {
         "tcp_pose": True, "tcp_pose_delta": True,     # commanded tool pose + gripper; `action` is the absolute one
+        "gripper_target": True,                       # the plan's gripper decision, 0/1 (action.gripper_target)
+        "clean_rate": True,                           # the undisturbed pursuit rate toward the next waypoint, m/s (action.clean_rate)
         "joint_pos": True, "joint_pos_delta": True,   # commanded joint targets
         "joint_vel": True, "joint_vel_delta": True,   # commanded joint velocity (rate of the joint targets)
         "link_poses": True, "link_poses_delta": True, # FK of the commanded joint targets
@@ -413,11 +491,20 @@ def env_config(config, env_idx, episode_idx=0):
         for spec in cfg["scene"]["objects"].values():
             spec["yaw"] = float(rng.uniform(lo, hi))
 
+    start_point = None
     if rand.get("start", {}).get("randomize"):
         n_arm = len(cfg["control"]["arm_joints"])
         home_qpos = np.array(cfg["control"]["home_qpos"], dtype=float)
         home_qpos[:n_arm] += np.deg2rad(rng.uniform(-rand["start"]["joint_range_deg"], rand["start"]["joint_range_deg"], size=n_arm))
         cfg["control"]["home_qpos"] = home_qpos
+        box = rand["start"].get("tool_box")
+        if box:
+            start_point = tuple(float(rng.uniform(*box[k])) for k in ("x", "y", "z"))
+    start_yaw = 0.0
+    if start_point is not None and rand["start"].get("yaw_range_deg"):
+        start_yaw = float(np.deg2rad(rng.uniform(-rand["start"]["yaw_range_deg"], rand["start"]["yaw_range_deg"])))
+    cfg["start_point"] = start_point
+    cfg["start_yaw"] = start_yaw
 
     offsets = {"pick_offset": (0.0, 0.0), "place_offset": (0.0, 0.0)}
     if rand.get("approach", {}).get("randomize"):
@@ -425,6 +512,12 @@ def env_config(config, env_idx, episode_idx=0):
         offsets = {k: tuple(float(v) for v in rng.uniform(-r, r, size=2)) for k in offsets}
     cfg["approach_offsets"] = offsets   # kept in the session's episode records, so a dataset can be checked
 
+    noise = rand.get("path_noise", {})
+    sigma = dict(noise.get("sigma", {})) if noise.get("enabled") else {}
+    yaw_sigma = dict(noise.get("yaw_sigma_deg", {})) if noise.get("enabled") else {}
+    cfg["noise_seed"] = int(rng.integers(2**31 - 1))   # the runner's disturbance generator for this env
+
     # Last step: build the plan for this task and layout, and turn object references into table coords.
-    cfg["plan"] = resolve_plan(make_plan(cfg["task"], cfg["scene"], **offsets), cfg["scene"])
+    cfg["plan"] = resolve_plan(make_plan(cfg["task"], cfg["scene"], start=start_point, start_yaw=start_yaw,
+                                         noise=sigma, yaw_noise=yaw_sigma, **offsets), cfg["scene"])
     return cfg

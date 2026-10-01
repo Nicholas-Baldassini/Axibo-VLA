@@ -49,9 +49,23 @@ sys.path.insert(0, str(TRAIN_DIR))
 sys.path.insert(0, str(ROOT / "source"))
 
 from actions import ActionTokenizer, unnormalize_actions   # noqa: E402
+import observe                                              # noqa: E402
 
 HISTORY = 300          # control steps kept in the traces
 SETTLE_STEPS = 60      # sim steps after a reset, so the arm is at rest before the first action
+# Workspace floor for the policy's integrated command, in metres above the table (--z-min). An
+# inference-side limit, as a real controller would enforce; the data and the model are unchanged.
+# The plan's lowest target is an object center, 0.02 above the table, so no demonstration goes
+# lower. Measured need (2026-09-27, 5000-step checkpoint): at grasp height the policy keeps
+# emitting about 0.5-2 mm of descent per control step; integrated, the finger pads reach the table
+# within a second, the gripper jams open at ~0.45, and from that never-recorded picture the close
+# command never comes. With the floor the tool stays where the demonstrations grasp.
+Z_MIN = 0.013      # engine 0.5.0 grasps 5 mm below the object centre, at 0.015; 0.018 for sessions up to 0.4.0
+# Gripper command mode (--gripper). "threshold": the predicted opening is read as a decision,
+# fully open at or above 0.5, fully closed below, which is how OpenVLA's own evaluations apply the
+# gripper and what a policy trained with the "target" gripper label (train/actions.py) predicts.
+# "raw": the predicted opening is applied as is; right for a run trained on the recorded ramp.
+GRIPPER_THRESHOLD = 0.5
 
 
 # --------------------------------- the run ---------------------------------
@@ -88,6 +102,19 @@ def load_run(path):
         if not local.exists():
             sys.exit(f"base checkpoint not found at {checkpoint} or {local}.\nRun train/download.py first.")
         run["config"]["model"]["checkpoint"] = str(local)
+
+    # A run trained with full-precision weights on a large card still runs here on a small one:
+    # the adapter is the same either way, and the base loads in 4-bit when the card cannot hold
+    # the 15 GB bf16 checkpoint beside the renderer. Predictions differ slightly from the
+    # full-precision model's; for the real evaluation use a card that fits the run as trained.
+    model_cfg = run["config"]["model"]
+    if not model_cfg.get("load_in_4bit"):
+        import torch
+        free_gb = torch.cuda.mem_get_info()[0] / 1e9 if torch.cuda.is_available() else 0.0
+        if free_gb < 24:
+            print(f"  note: run trained in {model_cfg['dtype']} without quantization; {free_gb:.1f} GB free here, "
+                  f"loading the base in 4-bit float16 instead")
+            model_cfg.update({"load_in_4bit": True, "dtype": "float16"})
 
     stats_file = adapter / "dataset_statistics.json"
     if not stats_file.exists():
@@ -167,13 +194,17 @@ class Policy:
         self.stats = stats
         self.names = list(run["action_names"])
         self.action_tokenizer = ActionTokenizer(self.tokenizer.vocab_size, bins=256)
-        self.image_key = run["config"]["observation"]["image"]
-        self.camera = self.image_key.split("observation.images.", 1)[-1]
+        self.view = observe.spec(run["config"]["observation"])
+        self.cameras = observe.camera_names(self.view)
+        self.camera = "policy input"        # the composed canvas, published under this name by Rollout
         self.stride = int(run["config"]["action"]["stride"])
 
-    def predict(self, image, instruction):
-        """(D,) action for one RGB frame (H, W, 3) uint8 and an instruction."""
-        from PIL import Image
+    def compose(self, images):
+        """The policy's canvas (uint8 H, W, 3) from a simulator observation's {camera: frame}."""
+        return observe.compose(images, self.view)
+
+    def predict(self, canvas, instruction):
+        """(D,) action for one composed canvas (from compose()) and an instruction."""
         from data import prompt_ids
 
         torch = self.torch
@@ -181,7 +212,7 @@ class Policy:
         # cuda:0, and the processor's numpy-based steps cannot take a CUDA tensor.
         with torch.device("cpu"):
             pixel_values = self.processor.image_processor(
-                Image.fromarray(image), return_tensors="pt")["pixel_values"]
+                observe.eval_view(canvas, self.view), return_tensors="pt")["pixel_values"]
         pixel_values = pixel_values.to(self.device, self.input_dtype)
         input_ids = torch.tensor([prompt_ids(self.tokenizer, instruction)], device=self.device)
 
@@ -205,8 +236,7 @@ class Simulator:
     on an 11 GB card.
     """
 
-    def __init__(self, session_cfg, backend="cpu"):
-        import genesis as gs
+    def __init__(self, session_cfg, backend="cpu", z_min=Z_MIN, gripper="threshold", show_viewer=False):
         from config import CONFIG, env_config
         from stacking_scene import build_scene, init_genesis, reset_envs, robot_dofs
         from utils.frames import table_top_z
@@ -228,11 +258,14 @@ class Simulator:
         cfg["sim"]["backend"] = backend
         cfg["ik"]["n_envs"] = 1
         cfg["viewer"]["draw_camera_frustums"] = False
+        
         self.cfg = cfg
+        self.z_min = z_min
+        self.gripper_mode = gripper
         self.warn = scene_mismatch(cfg, session_cfg)
 
         init_genesis(cfg)
-        self.scene, self.robot, _, self.objects, self.cameras = build_scene(cfg, show_viewer=False)
+        self.scene, self.robot, _, self.objects, self.cameras = build_scene(cfg, show_viewer=show_viewer)
         self.scene.build(n_envs=1, env_spacing=cfg["ik"]["env_spacing"])
         self.dofs = robot_dofs(self.robot, cfg)
         self.n_arm = len(cfg["control"]["arm_joints"])
@@ -247,9 +280,11 @@ class Simulator:
 
     # -- state --
 
-    def reset(self):
-        """A fresh random layout, the arm at home, and the commanded pose re-seeded from the arm."""
-        self.episode += 1
+    def reset(self, same_layout=False):
+        """A fresh random layout (or the current one again with same_layout), the arm at home, and
+        the commanded pose re-seeded from the arm."""
+        if not same_layout or not hasattr(self, "env_cfg"):
+            self.episode += 1
         env_cfg = self._env_config(self.cfg, self.episode, 0)
         self._reset_envs(self.robot, self.objects, [env_cfg])
         for _ in range(SETTLE_STEPS):
@@ -259,7 +294,27 @@ class Simulator:
         self.cmd_pos = np.asarray(self._tcp_pos_from_link(self.ee_link, self.cfg["ik"]["tcp_offset"]))[0]
         self.cmd_quat = self._to_array(self.ee_link.get_quat())[0].astype(float)
         self.cmd_grip = float(self.gripper_opening())
+        self.env_cfg = env_cfg
         return env_cfg
+
+    def align_yaw(self, source):
+        """Turn the wrist to the grasp yaw for `source` before the policy starts, in place.
+
+        Engine 0.6.0 sessions do this in an unrecorded start move, so every recorded frame begins
+        with the fingers already square to the source object's faces and the rotation labels are
+        zero; a policy trained on them cannot turn the wrist itself. Starting an evaluation from
+        the home yaw instead put the fingers diagonally across every cube (run 10: 3 of 20 cube
+        placements against 9 of 10 cylinders). This reproduces the sessions' starting state; it
+        uses the object's yaw from the simulator, which the policy never sees, so it is an
+        evaluation-protocol choice to state, not part of the policy."""
+        from utils.motion import grasp_quat
+        spec = self.env_cfg["scene"]["objects"][source]
+        quat = np.asarray(grasp_quat(spec, self.cfg["ik"]["target_quat"]), dtype=float)
+        self._move_tcp(self.robot, self.ee_link, self.arm_dofs, self.cmd_pos[None, :], quat[None, :], self.cfg["ik"])
+        for _ in range(SETTLE_STEPS):
+            self.scene.step()
+        self.cmd_quat = quat
+        self.cmd_pos = np.asarray(self._tcp_pos_from_link(self.ee_link, self.cfg["ik"]["tcp_offset"]))[0]
 
     def gripper_opening(self):
         q = self._to_array(self.robot.get_dofs_position(self.dofs))[0][self.n_arm:]
@@ -281,12 +336,18 @@ class Simulator:
         from scipy.spatial.transform import Rotation
 
         self.cmd_pos = self.cmd_pos + np.asarray(action[:3], dtype=float)
+        if self.z_min is not None:     # workspace floor, see Z_MIN
+            self.cmd_pos[2] = max(self.cmd_pos[2], self.table_offset[2] + self.z_min)
         # build_action_table produced the rotation as (r_now.inv() * r_ahead).as_rotvec(), so the
         # delta is applied on the right of the current command.
         now = Rotation.from_quat(self.cmd_quat[[1, 2, 3, 0]])
         turned = now * Rotation.from_rotvec(np.asarray(action[3:6], dtype=float))
         self.cmd_quat = turned.as_quat()[[3, 0, 1, 2]]
-        self.cmd_grip = float(np.clip(action[6], 0.0, 1.0))
+        predicted = float(np.clip(action[6], 0.0, 1.0))
+        if self.gripper_mode == "threshold":    # see GRIPPER_THRESHOLD
+            self.cmd_grip = 1.0 if predicted >= GRIPPER_THRESHOLD else 0.0
+        else:
+            self.cmd_grip = predicted
 
         self._move_tcp(self.robot, self.ee_link, self.arm_dofs,
                        self.cmd_pos[None, :], self.cmd_quat[None, :], self.cfg["ik"])
@@ -347,9 +408,10 @@ class Rollout:
         with self.lock:
             self._request = ("run", text)
 
-    def reset(self):
+    def reset(self, same_layout=False):
+        """New random layout, or with same_layout the current objects back where they spawned."""
         with self.lock:
-            self._request = ("reset", None)
+            self._request = ("reset", same_layout)
 
     def pause(self):
         with self.lock:
@@ -374,15 +436,16 @@ class Rollout:
 
     def _publish(self, obs, action=None):
         with self.lock:
-            self.images = obs["images"]
+            self.images = dict(obs["images"])
+            self.images[self.policy.camera] = self.policy.compose(obs["images"])
             self.joints.append(obs["joints"])
             self.tcp.append(obs["tcp"])
             self.grip.append(obs["gripper"])
             if action is not None:
                 self.actions.append(action)
 
-    def _do_reset(self):
-        self.sim.reset()
+    def _do_reset(self, same_layout=False):
+        self.sim.reset(same_layout=same_layout)
         with self.lock:
             self.joints.clear(); self.tcp.clear(); self.grip.clear(); self.actions.clear()
             self.step = 0
@@ -397,16 +460,18 @@ class Rollout:
                 request, self._request = self._request, None
             if request is not None:
                 kind, value = request
-                self._do_reset()
+                # A run restarts the current layout from its spawn state; a reset either redraws
+                # the layout or puts the current one back. Both stop the policy; the instruction
+                # is kept so the same command can be retried with one click.
+                self._do_reset(same_layout=(kind == "run") or bool(value))
                 with self.lock:
                     if kind == "run":
                         self.instruction, self.running = value, True
                         self.status = "running"
                     else:
-                        # A new layout stops the policy and keeps the instruction, so the same
-                        # command can be retried on fresh object positions with one click.
                         self.running = False
-                        self.status = f"new layout {self.sim.episode} - press Run or pick a task"
+                        self.status = (f"layout {self.sim.episode} reset - press Run or pick a task" if value
+                                       else f"new layout {self.sim.episode} - press Run or pick a task")
                 continue
 
             with self.lock:
@@ -417,7 +482,7 @@ class Rollout:
 
             obs = self.sim.observation()
             try:
-                action = self.policy.predict(obs["images"][self.policy.camera], instruction)
+                action = self.policy.predict(self.policy.compose(obs["images"]), instruction)
             except Exception as exc:                      # a failed prediction should not kill the GUI
                 with self.lock:
                     self.running, self.status = False, f"prediction failed: {exc}"
@@ -441,6 +506,13 @@ class Dashboard:
         self.model_cam = rollout.policy.camera
         self.cameras = [c for c in camera_order if c in rollout.sim.cameras]
 
+        # No figure keyboard shortcuts and no toolbar: a letter typed while the instruction box is
+        # not focused otherwise reaches the figure, and the "p" in "put" switched on pan mode,
+        # whose widget lock then made every button and the box ignore clicks (the dashboard
+        # looked frozen after the first typed command). "q" would have closed the window.
+        for key in [k for k in plt.rcParams if k.startswith("keymap.")]:
+            plt.rcParams[key] = []
+        plt.rcParams["toolbar"] = "None"
         self.fig = plt.figure(figsize=(16.5, 9.5))
         try:
             self.fig.canvas.manager.set_window_title("OpenVLA rollout")
@@ -494,7 +566,6 @@ class Dashboard:
     def _build_controls(self, Button, TextBox, warnings):
         # Six task buttons on one row, the held-out pair marked, then the free-text box.
         self.buttons = []
-        n = len(self.tasks)
         width, gap, left = 0.145, 0.012, 0.04
         for i, (text, held_out) in enumerate(self.tasks):
             ax = self.fig.add_axes([left + i * (width + gap), 0.135, width, 0.055])
@@ -510,20 +581,27 @@ class Dashboard:
         self.fig.text(left, 0.202, "Tasks   (X = held out of training, so this one is the out-of-distribution test)",
                       fontsize=8, color="0.3")
 
-        box_ax = self.fig.add_axes([left + 0.075, 0.055, 0.60, 0.05])
+        box_ax = self.fig.add_axes([left + 0.075, 0.055, 0.50, 0.05])
         self.text_box = TextBox(box_ax, "instruction  ", initial="")
         self.text_box.label.set_fontsize(9)
         self.text_box.on_submit(self._send)
 
-        run_ax = self.fig.add_axes([left + 0.69, 0.055, 0.08, 0.05])
+        run_ax = self.fig.add_axes([left + 0.59, 0.055, 0.07, 0.05])
         self.run_button = Button(run_ax, "Run", hovercolor="0.85")
         self.run_button.on_clicked(lambda _e: self._send(self.text_box.text))
 
-        pause_ax = self.fig.add_axes([left + 0.78, 0.055, 0.08, 0.05])
+        pause_ax = self.fig.add_axes([left + 0.67, 0.055, 0.07, 0.05])
         self.pause_button = Button(pause_ax, "Pause", hovercolor="0.85")
         self.pause_button.on_clicked(lambda _e: self.rollout.pause())
 
-        reset_ax = self.fig.add_axes([left + 0.87, 0.055, 0.10, 0.05])
+        # Reset scene: the same objects back where they spawned, the arm home, the policy stopped.
+        # New layout: a fresh random placement, yaws and start pose.
+        scene_ax = self.fig.add_axes([left + 0.75, 0.055, 0.10, 0.05])
+        self.scene_button = Button(scene_ax, "Reset scene", hovercolor="0.85")
+        self.scene_button.label.set_fontsize(8.5)
+        self.scene_button.on_clicked(lambda _e: self.rollout.reset(same_layout=True))
+
+        reset_ax = self.fig.add_axes([left + 0.86, 0.055, 0.10, 0.05])
         self.reset_button = Button(reset_ax, "New layout", hovercolor="0.85")
         self.reset_button.label.set_fontsize(8.5)
         self.reset_button.on_clicked(lambda _e: self.rollout.reset())
@@ -537,8 +615,20 @@ class Dashboard:
         if not text:
             return
         if self.text_box.text != text:
-            self.text_box.set_val(text)
+            # A task button rewrites the box. set_val fires the box's own submit event, which
+            # would call this handler a second time, so events are off while it is written.
+            self.text_box.eventson = False
+            try:
+                self.text_box.set_val(text)
+            finally:
+                self.text_box.eventson = True
         self.rollout.run_instruction(text)
+        # Keep the box focused after a run (a click on Run or a task button unfocuses it), so the
+        # next command can be typed straight away.
+        if not self.text_box.capturekeystrokes:
+            self.text_box.begin_typing()
+            self.text_box.cursor_index = len(self.text_box.text)
+            self.text_box._rendercursor()
 
     def _update(self, _frame):
         state = self.rollout.snapshot()
@@ -578,7 +668,7 @@ class Dashboard:
             f"status       {state['status']}",
             f"instruction  {state['instruction'] or '-'}",
             f"step         {state['step']}   control {r.hz:.1f} Hz  ({r.sim_steps} sim steps per action)",
-            f"policy sees  {self.model_cam}   stride {r.policy.stride}",
+            f"policy sees  {observe.describe(r.policy.view)}   stride {r.policy.stride}",
             "",
             "last action",
         ]
@@ -605,6 +695,12 @@ def main():
                         help="Genesis backend for the simulator. The default is whatever rendered "
                              "the training data, because the policy is sensitive to which renderer "
                              "produced its input; see the note in main().")
+    parser.add_argument("--z-min", type=float, default=Z_MIN,
+                        help=f"workspace floor for the commanded tool height, metres above the table "
+                             f"(default {Z_MIN}); a negative value disables it")
+    parser.add_argument("--gripper", choices=("threshold", "raw"), default="threshold",
+                        help="threshold (default): open at or above 0.5, closed below, for a run trained with the "
+                             "0/1 gripper label; raw: apply the predicted opening as is, for a run trained on the ramp")
     args = parser.parse_args()
 
     bundle = load_run(args.run)
@@ -636,7 +732,8 @@ def main():
     # it), and the checkpoint's image processor calls .numpy() on tensors it creates while loading,
     # which fails for a CUDA tensor. Loading the policy first keeps that code on the CPU.
     policy = Policy(run, bundle["adapter"], bundle["stats"])
-    sim = Simulator(session_cfg, backend=backend)
+    sim = Simulator(session_cfg, backend=backend, z_min=None if args.z_min < 0 else args.z_min, gripper=args.gripper)
+    print(f"z floor   {'off' if args.z_min < 0 else f'{args.z_min} m above the table'};  gripper {args.gripper}")
     for line in sim.warn:
         print(f"  warning: {line}")
 

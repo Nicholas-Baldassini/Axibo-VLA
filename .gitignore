@@ -26,3 +26,10 @@ train/runs/
 .DS_Store
 .vscode/
 .idea/
+.claude
+
+
+# Evaluations: only the final suite is committed
+train/evals/*
+!train/evals/v11_final_suite/
+evals
