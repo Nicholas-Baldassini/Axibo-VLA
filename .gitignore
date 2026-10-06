@@ -32,4 +32,7 @@ train/runs/
 # Evaluations: only the final suite is committed
 train/evals/*
 !train/evals/v11_final_suite/
+!train/evals/speed_eval/
+train/evals/speed_eval/*/*/videos/
+train/evals/speed_eval/*/*/traces/
 evals

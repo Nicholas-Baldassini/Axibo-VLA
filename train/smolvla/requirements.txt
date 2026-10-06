@@ -1,0 +1,15 @@
+# SmolVLA needs transformers >= 4.57 (SmolVLM2) and peft >= 0.17, which the OpenVLA checkpoint's
+# pinned transformers 4.40.1 rules out, so this goes in its own conda environment beside axibEnv:
+#
+#   conda create -n smolvlaEnv python=3.11
+#   conda activate smolvlaEnv
+#   pip install -r train/smolvla/requirements.txt
+#   python train/smolvla/finetune.py --config smolvla
+#
+# genesis-world is only needed to evaluate in the simulator from this environment.
+lerobot[smolvla]==0.4.4
+peft>=0.18          # imported by lerobot's smolvla module but missing from its extras
+torch<2.11
+torchvision
+torchcodec
+genesis-world==1.4.1

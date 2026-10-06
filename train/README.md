@@ -5,7 +5,16 @@ Fine-tuning OpenVLA on sessions recorded by the data engine in `source/`.
 ```
 train/
 ├── config/            one config per run type: openvla.py the base settings (12 GB card, 4-bit), openvla_80gb.py
-│                      and openvla_5090.py the bf16 runs for those cards
+│                      and openvla_5090.py the bf16 runs for those cards, smolvla.py the SmolVLA run
+├── smolvla/           the same fine-tune with SmolVLA instead of OpenVLA: data.py hands the session over under the
+│                      names SmolVLA expects (and says why), finetune.py is the loop, policy.py runs a checkpoint in the
+│                      simulator behind the same interface as the OpenVLA policy; its own conda env (requirements.txt)
+├── speed_eval/        inference speed and smoothness (task 3): speed_eval.py runs the seeded rollouts of config/speed_eval.py
+│                      under every optimisation stack it lists, one *_infer.py per optimisation (b16, b4, torch_compile,
+│                      draft_verify, smoothing, pipeline, stretch, freeze), decoding.py the decoder they share, controller.py
+│                      the clock that puts the policy's latency into the simulation, check_decoder.py the token-exactness
+│                      check, report.py one table across evaluation folders (real time against the lockstep ceiling, the
+│                      fixed-latency sweep)
 ├── checkpoints/       downloaded base models (not committed)
 ├── runs/              one directory per training run (not committed)
 ├── evals/             one folder per evaluation: protocol, seeds, per-rollout records, summary, videos
@@ -26,6 +35,32 @@ python train/download.py                                 # the base checkpoint, 
 python train/finetune.py --config openvla_80gb           # the fine-tune, on an 80 GB card (openvla_5090 on a 5090)
 python train/evaluate.py train/runs/<run>/step_010000    # the evaluation suite, bf16 on a card that runs Madrona
 python train/infer.py train/runs/<run>/step_010000       # the policy in the simulator, interactively
+```
+
+The SmolVLA run (450M parameters, trains on the 12 GB card in about 5 hours, same session, same run layout):
+
+```
+conda create -n smolvlaEnv python=3.11 && conda activate smolvlaEnv
+pip install -r train/smolvla/requirements.txt
+python train/smolvla/finetune.py --config smolvla
+python train/evaluate.py train/runs/<smolvla run>/final --horizon 300     # 30 Hz control, so 300 steps = the 10 s of OpenVLA's 100
+python train/infer.py train/runs/<smolvla run>/final --action-steps 10    # re-plan every 10 frames instead of the whole 50-frame chunk
+```
+
+evaluate.py and infer.py read the run's config.json to tell the two apart; a SmolVLA checkpoint is the directory
+holding model.safetensors, and `--action-steps` sets how much of each predicted chunk is executed before the
+next prediction.
+
+The speed evaluation (task 3) runs the same seeded rollouts under each optimisation stack of
+`train/config/speed_eval.py` and reports latency p50/p99, stall, jerk and success side by side; see
+the docstrings in `train/speed_eval/`:
+
+```
+python train/speed_eval/speed_eval.py --config speed_eval                      # every stack in the config
+python train/speed_eval/speed_eval.py --optims none,b16_infer+draft_verify_infer --combos "red_cube>red_cylinder:3" --timing lockstep
+python train/speed_eval/check_decoder.py train/runs/<run>/step_010000          # the decoder against generate(), on its own
+python train/speed_eval/speed_eval.py --optims none --latency 100               # a fixed latency on the clock instead of the measured one
+python train/speed_eval/report.py train/evals/speed_eval                        # every evaluation folder in one table
 ```
 
 Evaluation needs the Madrona renderer, which works on RTX 5090 hosts and not on the H100 hosts tried; `--trials`, `--horizon` and `--start-yaw` set the protocol, and every evaluation writes its folder under `train/evals/`.

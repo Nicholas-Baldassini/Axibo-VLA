@@ -75,15 +75,26 @@ def resolve_checkpoint(path):
 
     A run directory holds config.json and one checkpoint per save; "final" is preferred, otherwise
     the highest step. A checkpoint directory is accepted directly so an earlier save can be tried.
+
+    A SmolVLA checkpoint (train/smolvla/) has no adapter: the policy files sit in the checkpoint
+    directory itself, next to model.safetensors, and that directory is returned in the adapter's place.
     """
+    def saved(checkpoint):
+        """The directory holding the weights of a checkpoint directory, or None if it has none yet."""
+        if (checkpoint / "adapter").is_dir():
+            return checkpoint / "adapter"
+        if (checkpoint / "model.safetensors").exists():
+            return checkpoint
+        return None
+
     p = Path(path).expanduser().resolve()
-    if (p / "adapter").is_dir():
-        return p.parent, p / "adapter"
+    if saved(p) is not None:
+        return p.parent, saved(p)
     if not (p / "config.json").exists():
         sys.exit(f"{p} is not a training run: no config.json. Pass train/runs/<run> or one of its checkpoints.")
-    if (p / "final" / "adapter").is_dir():
-        return p, p / "final" / "adapter"
-    steps = sorted(p.glob("step_*/adapter"))
+    if saved(p / "final") is not None:
+        return p, saved(p / "final")
+    steps = [saved(c) for c in sorted(p.glob("step_*")) if saved(c) is not None]
     if not steps:
         sys.exit(f"{p} has no saved checkpoint yet (no final/ or step_*/). Let training save one first.")
     return p, steps[-1]
@@ -93,36 +104,42 @@ def load_run(path):
     """Everything the GUI and the policy need, read from the run and the session behind it."""
     run_dir, adapter = resolve_checkpoint(path)
     run = json.loads((run_dir / "config.json").read_text())
+    # Which trainer wrote the run: train/finetune.py (OpenVLA, a LoRA adapter on a base checkpoint)
+    # or train/smolvla/finetune.py, whose checkpoints are self-contained and carry their own
+    # normalization, so only the OpenVLA branch below has a base model and statistics to resolve.
+    kind = run.get("model", {}).get("type", "openvla")
+    stats = None
 
-    # The base checkpoint is also recorded as an absolute path. When it is not there, the same
-    # checkpoint under this machine's train/checkpoints/ (where train/download.py puts it) stands in.
-    checkpoint = Path(run["config"]["model"]["checkpoint"])
-    if not checkpoint.exists():
-        local = TRAIN_DIR / "checkpoints" / checkpoint.name
-        if not local.exists():
-            sys.exit(f"base checkpoint not found at {checkpoint} or {local}.\nRun train/download.py first.")
-        run["config"]["model"]["checkpoint"] = str(local)
+    if kind == "openvla":
+        # The base checkpoint is also recorded as an absolute path. When it is not there, the same
+        # checkpoint under this machine's train/checkpoints/ (where train/download.py puts it) stands in.
+        checkpoint = Path(run["config"]["model"]["checkpoint"])
+        if not checkpoint.exists():
+            local = TRAIN_DIR / "checkpoints" / checkpoint.name
+            if not local.exists():
+                sys.exit(f"base checkpoint not found at {checkpoint} or {local}.\nRun train/download.py first.")
+            run["config"]["model"]["checkpoint"] = str(local)
 
-    # A run trained with full-precision weights on a large card still runs here on a small one:
-    # the adapter is the same either way, and the base loads in 4-bit when the card cannot hold
-    # the 15 GB bf16 checkpoint beside the renderer. Predictions differ slightly from the
-    # full-precision model's; for the real evaluation use a card that fits the run as trained.
-    model_cfg = run["config"]["model"]
-    if not model_cfg.get("load_in_4bit"):
-        import torch
-        free_gb = torch.cuda.mem_get_info()[0] / 1e9 if torch.cuda.is_available() else 0.0
-        if free_gb < 24:
-            print(f"  note: run trained in {model_cfg['dtype']} without quantization; {free_gb:.1f} GB free here, "
-                  f"loading the base in 4-bit float16 instead")
-            model_cfg.update({"load_in_4bit": True, "dtype": "float16"})
+        # A run trained with full-precision weights on a large card still runs here on a small one:
+        # the adapter is the same either way, and the base loads in 4-bit when the card cannot hold
+        # the 15 GB bf16 checkpoint beside the renderer. Predictions differ slightly from the
+        # full-precision model's; for the real evaluation use a card that fits the run as trained.
+        model_cfg = run["config"]["model"]
+        if not model_cfg.get("load_in_4bit"):
+            import torch
+            free_gb = torch.cuda.mem_get_info()[0] / 1e9 if torch.cuda.is_available() else 0.0
+            if free_gb < 24:
+                print(f"  note: run trained in {model_cfg['dtype']} without quantization; {free_gb:.1f} GB free here, "
+                      f"loading the base in 4-bit float16 instead")
+                model_cfg.update({"load_in_4bit": True, "dtype": "float16"})
 
-    stats_file = adapter / "dataset_statistics.json"
-    if not stats_file.exists():
-        stats_file = run_dir / "dataset_statistics.json"
-    stats = json.loads(stats_file.read_text())
-    # The run file nests the statistics under the dataset key; a checkpoint saves them bare.
-    if run["norm_stats_key"] in stats:
-        stats = stats[run["norm_stats_key"]]["action"]
+        stats_file = adapter / "dataset_statistics.json"
+        if not stats_file.exists():
+            stats_file = run_dir / "dataset_statistics.json"
+        stats = json.loads(stats_file.read_text())
+        # The run file nests the statistics under the dataset key; a checkpoint saves them bare.
+        if run["norm_stats_key"] in stats:
+            stats = stats[run["norm_stats_key"]]["action"]
 
     # The run records the session it trained on as an absolute path, which does not survive being
     # copied to another machine. A session_config.json beside the run or the checkpoint stands in
@@ -139,8 +156,20 @@ def load_run(path):
                  + "\n           ".join(str(c) for c in candidates)
                  + f"\nCopy the session's config.json to {run_dir / 'session_config.json'}.")
     session_cfg = json.loads(session_cfg_path.read_text())
-    return {"run_dir": run_dir, "adapter": adapter, "run": run, "stats": stats,
+    return {"run_dir": run_dir, "adapter": adapter, "run": run, "stats": stats, "kind": kind,
+            "checkpoint": adapter if kind == "smolvla" else adapter.parent,
             "session": session, "session_cfg": session_cfg}
+
+
+def make_policy(bundle, action_steps=None):
+    """The policy a run trained, behind the one interface Rollout and evaluate.py drive:
+    step(obs, instruction) -> the action Simulator.apply takes, reset(), compose(images) for display.
+    action_steps: for a SmolVLA run, how many of each predicted chunk to execute before predicting
+    again (the checkpoint's n_action_steps when None); ignored for OpenVLA, which predicts every step."""
+    if bundle["kind"] == "smolvla":
+        from smolvla.policy import SmolVLA
+        return SmolVLA(bundle["run"], bundle["adapter"], action_steps=action_steps)
+    return Policy(bundle["run"], bundle["adapter"], bundle["stats"])
 
 
 def task_buttons(session_cfg):
@@ -224,6 +253,13 @@ class Policy:
         tokens = generated[0, -len(self.names):].cpu().numpy()
         normalized = self.action_tokenizer.decode_token_ids_to_actions(tokens)
         return np.asarray(unnormalize_actions(normalized, self.stats), dtype=float)
+
+    def step(self, obs, instruction):
+        """The action for Simulator.apply from one simulator observation."""
+        return self.predict(self.compose(obs["images"]), instruction)
+
+    def reset(self):
+        """Nothing to clear: one action per prediction."""
 
 
 # --------------------------------- the simulator ---------------------------------
@@ -327,12 +363,21 @@ class Simulator:
         tcp = np.asarray(self._tcp_pos_from_link(self.ee_link, self.cfg["ik"]["tcp_offset"]))[0]
         images = {name: self._to_array(cam.read().rgb)[0] for name, cam in self.cameras.items()}
         return {"joints": q.astype(float), "tcp": tcp - self.table_offset,
-                "gripper": self.gripper_opening(), "images": images}
+                "gripper": self.gripper_opening(), "images": images,
+                # the pose currently commanded (table coords, quat wxyz): what the next delta is applied to
+                "cmd": (self.cmd_pos - self.table_offset, self.cmd_quat.copy())}
 
     # -- control --
 
     def apply(self, action, sim_steps):
         """Integrate one predicted action onto the commanded pose and run the sim forward."""
+        self.command(action)
+        for _ in range(sim_steps):
+            self.scene.step()
+
+    def command(self, action):
+        """Integrate one predicted action onto the commanded pose and send it to the controllers,
+        without stepping: the speed evaluation steps the physics on its own clock."""
         from scipy.spatial.transform import Rotation
 
         self.cmd_pos = self.cmd_pos + np.asarray(action[:3], dtype=float)
@@ -345,16 +390,30 @@ class Simulator:
         self.cmd_quat = turned.as_quat()[[3, 0, 1, 2]]
         predicted = float(np.clip(action[6], 0.0, 1.0))
         if self.gripper_mode == "threshold":    # see GRIPPER_THRESHOLD
-            self.cmd_grip = 1.0 if predicted >= GRIPPER_THRESHOLD else 0.0
+            grip = 1.0 if predicted >= GRIPPER_THRESHOLD else 0.0
         else:
-            self.cmd_grip = predicted
+            grip = predicted
+        self.command_pose(self.cmd_pos, self.cmd_quat, grip)
 
+    def command_pose(self, pos, quat, grip):
+        """Send an absolute commanded pose (world coords, quat wxyz) and gripper opening (0..1) to
+        the controllers, without stepping; the workspace floor applies. The speed evaluation uses
+        this to move the command along an action in small steps instead of all at once."""
+        self.cmd_pos = np.asarray(pos, dtype=float).copy()
+        if self.z_min is not None:
+            self.cmd_pos[2] = max(self.cmd_pos[2], self.table_offset[2] + self.z_min)
+        self.cmd_quat = np.asarray(quat, dtype=float).copy()
+        self.cmd_grip = float(grip)
         self._move_tcp(self.robot, self.ee_link, self.arm_dofs,
                        self.cmd_pos[None, :], self.cmd_quat[None, :], self.cfg["ik"])
         grip_q = self.grip_closed + self.cmd_grip * (self.grip_open - self.grip_closed)
         self.robot.control_dofs_position(np.tile(grip_q, (1, 1)), self.grip_dofs)
-        for _ in range(sim_steps):
-            self.scene.step()
+
+    def joints(self):
+        """Joint positions (8,) and the tool position in table coords (3,), without rendering."""
+        q = self._to_array(self.robot.get_dofs_position(self.dofs))[0]
+        tcp = np.asarray(self._tcp_pos_from_link(self.ee_link, self.cfg["ik"]["tcp_offset"]))[0]
+        return q.astype(float), tcp - self.table_offset
 
 
 def scene_mismatch(live, session_cfg):
@@ -446,6 +505,7 @@ class Rollout:
 
     def _do_reset(self, same_layout=False):
         self.sim.reset(same_layout=same_layout)
+        self.policy.reset()
         with self.lock:
             self.joints.clear(); self.tcp.clear(); self.grip.clear(); self.actions.clear()
             self.step = 0
@@ -482,7 +542,7 @@ class Rollout:
 
             obs = self.sim.observation()
             try:
-                action = self.policy.predict(self.policy.compose(obs["images"]), instruction)
+                action = self.policy.step(obs, instruction)
             except Exception as exc:                      # a failed prediction should not kill the GUI
                 with self.lock:
                     self.running, self.status = False, f"prediction failed: {exc}"
@@ -689,7 +749,7 @@ class Dashboard:
 # --------------------------------- entry point ---------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Run a fine-tuned OpenVLA policy in the simulator.")
+    parser = argparse.ArgumentParser(description="Run a fine-tuned policy (OpenVLA or SmolVLA run) in the simulator.")
     parser.add_argument("run", help="a training run directory (train/runs/<run>) or one of its checkpoints")
     parser.add_argument("--backend", default=None,
                         help="Genesis backend for the simulator. The default is whatever rendered "
@@ -701,6 +761,9 @@ def main():
     parser.add_argument("--gripper", choices=("threshold", "raw"), default="threshold",
                         help="threshold (default): open at or above 0.5, closed below, for a run trained with the "
                              "0/1 gripper label; raw: apply the predicted opening as is, for a run trained on the ramp")
+    parser.add_argument("--action-steps", type=int, default=None,
+                        help="SmolVLA runs: actions executed per predicted chunk before predicting again "
+                             "(default: the checkpoint's n_action_steps)")
     args = parser.parse_args()
 
     bundle = load_run(args.run)
@@ -708,7 +771,8 @@ def main():
     print(f"run       {bundle['run_dir']}")
     print(f"checkpoint{'':1s} {bundle['adapter']}")
     print(f"session   {bundle['session']}  ({run['dataset']['episodes']} episodes, {run['dataset']['frames']} frames)")
-    print(f"policy    sees {run['config']['observation']['image']}, predicts {run['action_names']}")
+    obs_cfg = run["config"]["observation"]
+    print(f"policy    {bundle['kind']}: sees {obs_cfg.get('image') or list(obs_cfg['cameras'])}, predicts {run['action_names']}")
 
     # Render with whatever rendered the training data. The CUDA batch renderer and the CPU
     # rasterizer do not produce the same image, and the policy is sensitive to the difference: on
@@ -731,7 +795,7 @@ def main():
     # torch's default device to cuda:0 (measured: torch.get_default_device() reads cuda:0 after
     # it), and the checkpoint's image processor calls .numpy() on tensors it creates while loading,
     # which fails for a CUDA tensor. Loading the policy first keeps that code on the CPU.
-    policy = Policy(run, bundle["adapter"], bundle["stats"])
+    policy = make_policy(bundle, action_steps=args.action_steps)
     sim = Simulator(session_cfg, backend=backend, z_min=None if args.z_min < 0 else args.z_min, gripper=args.gripper)
     print(f"z floor   {'off' if args.z_min < 0 else f'{args.z_min} m above the table'};  gripper {args.gripper}")
     for line in sim.warn:
