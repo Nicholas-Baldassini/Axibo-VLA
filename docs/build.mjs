@@ -1,55 +1,70 @@
-// Build the writeup: pages/*.md -> one HTML page with a navbar, per-page table of contents and
-// inlined images, then encrypt it with StatiCrypt into site/.
-// Usage: npm run build          render + encrypt into site/ (what Vercel serves)
-//        npm run dev            live preview: re-renders on save and reloads the browser, no passphrase
-// Passphrase: STATICRYPT_PASSWORD from docs/.env (gitignored) or the environment; prompts if unset.
+// Build the writeup: pages/*.md -> site/index.html, one public page with a navbar, a per-page table
+// of contents, the images copied beside it, and the metadata search engines and link previews read.
+// Usage: npm run build          render into site/ (what Vercel serves)
+//        npm run dev            live preview: re-renders on save and reloads the browser
 //
 // A missing image renders as a labelled placeholder naming the file to add.
 // Themes: "retro" (a 1990s desktop) and "modern" (dark) both ship in the page; a button at the top
 // right switches between them and the choice is remembered in the browser. DEFAULT_THEME is the first visit.
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Marked } from "marked";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const TITLE = "VLA Test";
 const DEFAULT_THEME = "retro";   // "retro" or "modern"
-const FAVICON = join(root, "images", "favicon.png"); // small square PNG; see README to regenerate
+
+// ---- who and what this site is: the words search engines, link previews and the masthead show ----
+const SITE_URL = "https://axibo-vl-atest.vercel.app";
+const TITLE = "Axibo Robotics VLA Test";
+const TAGLINE = "Vision-language-action robot learning, in four tasks";
+const DESCRIPTION =
+  "Axibo Robotics' vision-language-action (VLA) test: a simulated data engine, OpenVLA fine-tuning, " +
+  "inference speed-ups for closed-loop control, and learning from experience with RECAP, for a " +
+  "language-conditioned stacking task on the AgileX Piper X arm in the Genesis simulator.";
+const KEYWORDS = [
+  "Axibo", "Axibo Robotics", "Axibo AI", "VLA", "vision-language-action", "OpenVLA", "robot learning",
+  "imitation learning", "Genesis simulator", "AgileX Piper", "LeRobot", "RECAP", "humanoid robotics",
+  "robot manipulation", "data engine",
+];
+const ORGANIZATION = { name: "Axibo Robotics", url: "https://axibo.com" };
+const LINKS = [
+  { label: "Challenge brief", href: "https://github.com/axiboai/axibo_vla_challenge" },
+  { label: "Axibo", href: ORGANIZATION.url },
+];
+const MASTHEAD_TEXT =
+  "Four tasks from Axibo Robotics' VLA setup: build a data engine in simulation, fine-tune OpenVLA on " +
+  "what it records, make inference fast enough for closed-loop control, and improve the policy from its own " +
+  "rollouts. The task throughout: put one of three objects on another, by name, with an AgileX Piper X arm.";
+const OG_IMAGE = "images/og.png";   // link-preview image, 480x320; the first frame of engine.gif (see README)
 
 const PAGES = [
-  { id: "task1", title: "Task 1", file: "pages/task1.md" },
-  { id: "task2", title: "Task 2", file: "pages/task2.md" },
-  { id: "task3", title: "Task 3", file: "pages/task3.md" },
-  { id: "task4", title: "Task 4", file: "pages/task4.md" },
+  { id: "task1", title: "Task 1", name: "Task 1: Data engine", file: "pages/task1.md" },
+  { id: "task2", title: "Task 2", name: "Task 2: Fine-tuning OpenVLA", file: "pages/task2.md" },
+  { id: "task3", title: "Task 3", name: "Task 3: Inference speed", file: "pages/task3.md" },
+  { id: "task4", title: "Task 4", name: "Task 4: Learning from experience", file: "pages/task4.md" },
 ];
 
-const dataUri = (file, type) => `data:${type};base64,${readFileSync(file).toString("base64")}`;
-const faviconTag = `<link rel="icon" type="image/png" href="${dataUri(FAVICON, "image/png")}">`;
-const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const slug = (s) => s.toLowerCase().replace(/<[^>]+>/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const missing = [];
 
-// Inline local images as data URIs so nothing is fetchable outside the encrypted page.
-const mime = {
-  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-  ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp",
-};
-function inlineImages(html) {
+// Images stay files under site/images/ (copied from images/ at build time) and are lazy-loaded; a
+// page that inlined its 30 MB of GIFs would be unreadable to crawlers and slow for everyone else.
+const IMAGE_TYPES = new Set([".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"]);
+function checkImages(html) {
   return html.replace(/<img\b([^>]*)>/g, (tag, attrs) => {
     const src = /\bsrc="([^"]+)"/.exec(attrs)?.[1];
     if (!src || /^(https?:|data:)/.test(src)) return tag;
     const alt = /\balt="([^"]*)"/.exec(attrs)?.[1] ?? "";
     const file = join(root, src);
-    const type = mime[extname(file).toLowerCase()];
-    if (!type) throw new Error(`unsupported image type: ${src}`);
+    if (!IMAGE_TYPES.has(extname(file).toLowerCase())) throw new Error(`unsupported image type: ${src}`);
     if (!existsSync(file)) {
       missing.push(src);
       return `<span class="img-placeholder"><strong>${escapeHtml(alt || "Image")}</strong>` +
         `Placeholder: add the file docs/${escapeHtml(src)}</span>`;
     }
-    return `<img${attrs.replace(/\bsrc="[^"]+"/, `src="${dataUri(file, type)}"`)}>`;
+    return `<img loading="lazy"${attrs}>`;
   });
 }
 
@@ -66,14 +81,14 @@ function renderPage(page) {
       },
     },
   });
-  const body = inlineImages(marked.parse(readFileSync(join(root, page.file), "utf8")));
+  const body = checkImages(marked.parse(readFileSync(join(root, page.file), "utf8")));
   const tocHtml = toc.length
     ? `<ul>${toc.map((t) => `<li class="d${t.depth}"><a href="#${t.id}">${t.text}</a></li>`).join("")}</ul>`
     : `<p class="empty">No sections yet.</p>`;
   return {
-    section: `<section class="page" data-id="${page.id}" hidden>\n${body}</section>`,
+    section: `<section class="page" data-id="${page.id}" data-name="${escapeHtml(page.name)}" hidden>\n${body}</section>`,
     toc: `<nav class="toc" data-page="${page.id}" hidden><div class="toc-title">Contents</div>${tocHtml}</nav>`,
-    link: `<a href="#${page.id}" data-page="${page.id}">${page.title}</a>`,
+    link: `<a href="#${page.id}" data-page="${page.id}" title="${escapeHtml(page.name)}">${page.title}</a>`,
   };
 }
 
@@ -96,6 +111,9 @@ const SHARED_CSS = `
   .img-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .3rem; min-height: 12rem; }
   .toc ul { list-style: none; margin: 0; padding: 0; }
   .toc li a { display: block; text-decoration: none; }
+  .masthead h1 { margin: 0 0 .4rem; }
+  .masthead p { margin: 0 0 .6rem; }
+  .masthead .links { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin: 0; padding: 0; list-style: none; }
   table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
   th, td { text-align: left; vertical-align: top; }
   pre { overflow: auto; }
@@ -117,7 +135,7 @@ html[data-theme="modern"] {
   body { margin: 0; font: 17px/1.6 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
   a { color: var(--accent); }
   .topbar { height: 3.25rem; gap: 1.5rem; padding: 0 1.25rem; background: var(--bar); border-bottom: 1px solid var(--line); }
-  .topbar .brand { font-weight: 700; margin-right: .5rem; }
+  .topbar .brand { font-weight: 700; margin-right: .5rem; color: var(--fg); text-decoration: none; }
   .topbar nav a { color: var(--fg); text-decoration: none; padding: .35rem .7rem; border-radius: .4rem; }
   .topbar nav a.active { background: var(--accent); color: #fff; }
   .theme-toggle { font: inherit; font-size: .85rem; color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: .4rem; padding: .3rem .7rem; }
@@ -130,6 +148,10 @@ html[data-theme="modern"] {
   .toc li.d3 a { padding-left: 1.6rem; font-size: .88rem; }
   .toc li a.active { color: var(--accent); border-left-color: var(--accent); }
   .toc li a:hover { color: var(--fg); }
+  .masthead { margin-bottom: 2.5rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--line); }
+  .masthead h1 { font-size: 2.2rem; line-height: 1.15; }
+  .masthead .tagline { color: var(--muted); font-size: 1.05rem; }
+  .masthead .links a { font-size: .92rem; }
   main h1 { font-size: 2rem; margin-top: 0; }
   main h2 { margin-top: 2.5rem; padding-top: .5rem; border-top: 1px solid var(--line); }
   main h2, main h3 { scroll-margin-top: 4.25rem; }
@@ -159,7 +181,7 @@ html[data-theme="retro"] {
   ::selection { background: var(--navy); color: #fff; }
 
   .topbar { height: 2.75rem; gap: .35rem; padding: 0 .4rem 0 .6rem; background: var(--titlebar); border: 2px outset #dfdfdf; border-bottom-color: #404040; }
-  .topbar .brand { font: bold 17px "Times New Roman", Times, serif; color: #fff; text-shadow: 1px 1px #000; margin-right: .6rem; }
+  .topbar .brand { font: bold 17px "Times New Roman", Times, serif; color: #fff; text-shadow: 1px 1px #000; margin-right: .6rem; text-decoration: none; }
   .topbar nav a { color: #000; text-decoration: none; padding: .2rem .8rem; background: var(--grey); border: 2px outset #fff; font: 13px Verdana, Tahoma, sans-serif; }
   .topbar nav a.active { border-style: inset; background: #a8a8a8; }
   .theme-toggle { font: 12px Verdana, Tahoma, sans-serif; color: #000; background: var(--grey); border: 2px outset #fff; padding: .2rem .6rem; }
@@ -181,6 +203,11 @@ html[data-theme="retro"] {
   .toc li a:hover { text-decoration: underline; }
 
   main { background: #fff; border: 3px outset #fff; padding: 1.25rem 1.75rem; box-shadow: 6px 6px 0 #004c4c; }
+  .masthead { margin: -1.25rem -1.75rem 1.5rem; padding: 1rem 1.75rem 1rem; background: var(--grey); border-bottom: 3px outset #fff; }
+  .masthead h1 { font: bold 26px "Times New Roman", Times, serif; color: var(--navy); border: 0; margin: 0 0 .3rem; padding: 0; }
+  .masthead .tagline { font: 13px Verdana, Tahoma, sans-serif; }
+  .masthead p { font-size: 14px; }
+  .masthead .links { font: 12px Verdana, Tahoma, sans-serif; }
   main h1 { font: bold 30px "Times New Roman", Times, serif; color: var(--navy); margin: 0 0 1rem; padding-bottom: .35rem;
             border: 0; border-bottom: 5px solid transparent; border-image: linear-gradient(90deg, #ff0000, #ff8800, #ffff00, #00cc00, #0000ff, #8800cc) 1; }
   main h2 { font: bold 21px "Times New Roman", Times, serif; color: var(--navy); margin-top: 2rem; border-bottom: 1px solid var(--dark); }
@@ -211,7 +238,50 @@ html[data-theme="retro"] {
 }
 `;
 
-/** Render every page into build/index.html and return the HTML. */
+// What search engines and link previews read. The page is one URL with hash routes, so there is
+// one canonical and one description; the per-page document title is set by script as you navigate.
+function headTags() {
+  const ogImage = `${SITE_URL}/${OG_IMAGE}`;
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    headline: TITLE,
+    description: DESCRIPTION,
+    url: `${SITE_URL}/`,
+    image: ogImage,
+    keywords: KEYWORDS.join(", "),
+    inLanguage: "en",
+    author: { "@type": "Organization", name: ORGANIZATION.name, url: ORGANIZATION.url },
+    publisher: { "@type": "Organization", name: ORGANIZATION.name, url: ORGANIZATION.url },
+    about: ["vision-language-action models", "robot learning", "robotic manipulation"],
+    hasPart: PAGES.map((p) => ({ "@type": "WebPageElement", name: p.name, url: `${SITE_URL}/#${p.id}` })),
+    isPartOf: { "@type": "WebSite", name: TITLE, url: `${SITE_URL}/` },
+  };
+  return `<title>${escapeHtml(TITLE)}</title>
+<meta name="description" content="${escapeHtml(DESCRIPTION)}">
+<meta name="keywords" content="${escapeHtml(KEYWORDS.join(", "))}">
+<meta name="author" content="${escapeHtml(ORGANIZATION.name)}">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#000080">
+<link rel="canonical" href="${SITE_URL}/">
+<link rel="icon" type="image/png" href="favicon.png">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="${escapeHtml(TITLE)}">
+<meta property="og:title" content="${escapeHtml(TITLE)}: ${escapeHtml(TAGLINE)}">
+<meta property="og:description" content="${escapeHtml(DESCRIPTION)}">
+<meta property="og:url" content="${SITE_URL}/">
+<meta property="og:image" content="${ogImage}">
+<meta property="og:image:width" content="480">
+<meta property="og:image:height" content="320">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${escapeHtml(TITLE)}">
+<meta name="twitter:description" content="${escapeHtml(DESCRIPTION)}">
+<meta name="twitter:image" content="${ogImage}">
+<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`;
+}
+
+/** Render every page into site/index.html (with the images and crawler files beside it unless dev) and return the HTML. */
 let lastMissing = null;
 export function render({ dev = false } = {}) {
   missing.length = 0;
@@ -219,7 +289,6 @@ export function render({ dev = false } = {}) {
   const report = missing.join("\n  ");
   if (missing.length && report !== lastMissing) console.warn(`placeholders rendered for missing files:\n  ${report}`);
   lastMissing = report;   // in dev mode, only repeat the warning when the list changes
-  const built = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
 
   // The retro ticker: site chrome, then facts. Kept short so each fits on screen while it passes.
   const tickerItems = [
@@ -248,21 +317,21 @@ export function render({ dev = false } = {}) {
   ];
   const tickerText = `★ ${tickerItems.join(" ★ ")} ★`;
   const tickerSeconds = Math.round((tickerText.length * 7.5 + 1400) / 95);   // ~95 px/s regardless of length
+  const links = LINKS.map((l) => `<li><a href="${l.href}" rel="noopener">${escapeHtml(l.label)}</a></li>`).join("");
 
   const html = `<!doctype html>
 <html lang="en" data-theme="${DEFAULT_THEME}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${TITLE}</title>
-${faviconTag}
+${headTags()}
 <script>try { const t = localStorage.getItem("vla-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}</script>
 <style>${SHARED_CSS}${MODERN_CSS}${RETRO_CSS}</style>
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">${TITLE}</div>
-  <nav class="pages">${rendered.map((r) => r.link).join("")}</nav>
+  <a class="brand" href="#${PAGES[0].id}">${escapeHtml(TITLE)}</a>
+  <nav class="pages" aria-label="Tasks">${rendered.map((r) => r.link).join("")}</nav>
   <div class="spacer"></div>
   <button id="theme-toggle" class="theme-toggle" type="button"></button>
   <div class="win-buttons" aria-hidden="true"><span>_</span><span>□</span><span>×</span></div>
@@ -270,7 +339,15 @@ ${faviconTag}
 <div class="ticker" aria-hidden="true"><span style="animation-duration: ${tickerSeconds}s">${escapeHtml(tickerText)}</span></div>
 <div class="layout">
   <aside class="sidebar">${rendered.map((r) => r.toc).join("\n")}</aside>
-  <main>${rendered.map((r) => r.section).join("\n")}</main>
+  <main>
+<header class="masthead">
+  <h1>${escapeHtml(TITLE)}</h1>
+  <p class="tagline">${escapeHtml(TAGLINE)}</p>
+  <p>${escapeHtml(MASTHEAD_TEXT)}</p>
+  <ul class="links">${links}</ul>
+</header>
+${rendered.map((r) => r.section).join("\n")}
+  </main>
 </div>
 <script>
 (() => {
@@ -286,6 +363,7 @@ ${faviconTag}
   label();
 
   // Page routing by hash, and a table of contents that follows the scroll position.
+  const siteTitle = ${JSON.stringify(TITLE)};
   const pages = [...document.querySelectorAll("section.page")];
   const ids = pages.map((p) => p.dataset.id);
   let onScroll = null;
@@ -313,6 +391,8 @@ ${faviconTag}
     pages.forEach((p) => (p.hidden = p.dataset.id !== id));
     document.querySelectorAll("nav.toc").forEach((t) => (t.hidden = t.dataset.page !== id));
     document.querySelectorAll(".topbar a[data-page]").forEach((a) => a.classList.toggle("active", a.dataset.page === id));
+    const page = pages.find((p) => p.dataset.id === id);
+    document.title = page ? page.dataset.name + " | " + siteTitle : siteTitle;
     const target = document.getElementById(location.hash.slice(1));
     if (target) target.scrollIntoView({ block: "start" });
     else window.scrollTo(0, 0);
@@ -327,32 +407,27 @@ ${dev ? LIVE_RELOAD : ""}</body>
 </html>
 `;
 
-  const build = join(root, "build");
-  mkdirSync(build, { recursive: true });
-  writeFileSync(join(build, "index.html"), html);
+  const site = join(root, "site");
+  mkdirSync(site, { recursive: true });
+  writeFileSync(join(site, "index.html"), html);
+  if (!dev) {
+    // The images beside the page, the favicon, and what crawlers look for. (The dev server serves
+    // images/ directly, so it skips the copy.)
+    rmSync(join(site, "images"), { recursive: true, force: true });
+    cpSync(join(root, "images"), join(site, "images"), { recursive: true });
+    cpSync(join(root, "images", "favicon.png"), join(site, "favicon.png"));
+    writeFileSync(join(site, "robots.txt"), `User-agent: *\nAllow: /\n\nSitemap: ${SITE_URL}/sitemap.xml\n`);
+    writeFileSync(join(site, "sitemap.xml"), `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>${SITE_URL}/</loc><lastmod>${new Date().toISOString().slice(0, 10)}</lastmod></url>
+</urlset>
+`);
+  }
   return html;
 }
 
-/** Encrypt build/index.html -> site/index.html. The salt lives in .staticrypt.json; commit it. */
-export function encrypt() {
-  // On a build server there is no one to answer StatiCrypt's prompt, so fail fast instead of hanging.
-  if (!process.env.STATICRYPT_PASSWORD && (process.env.CI || process.env.VERCEL)) {
-    throw new Error("STATICRYPT_PASSWORD is not set; add it to the project's environment variables");
-  }
-  // --short skips StatiCrypt's interactive "password is short, continue?" prompt, which would hang a
-  // build server; the README still asks for a 16+ character passphrase.
-  execFileSync(
-    join(root, "node_modules", ".bin", "staticrypt"),
-    ["index.html", "-d", "../site", "--config", "../.staticrypt.json", "--remember", "30", "--short", "--template-title", TITLE],
-    { cwd: join(root, "build"), stdio: "inherit" },
-  );
-  // The passphrase prompt is StatiCrypt's own template; give it the same favicon as the page behind it.
-  const out = join(root, "site", "index.html");
-  writeFileSync(out, readFileSync(out, "utf8").replace("</title>", `</title>\n        ${faviconTag}`));
-}
-
-// `node build.mjs` (npm run build): render, then encrypt. Importers (dev.mjs) call render() themselves.
+// `node build.mjs` (npm run build): render into site/. Importers (dev.mjs) call render() themselves.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   render();
-  encrypt();
+  console.log(`built site/index.html (${(readFileSync(join(root, "site", "index.html")).length / 1024).toFixed(0)} kB) with images/, favicon, robots.txt and sitemap.xml`);
 }
